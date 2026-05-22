@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ads1285-automation"
+version = "0.1.0"
+description = "ADS1285 EVM automation system for seismic and vibration measurements"
+readme = "README.md"
+license = {text = "TBD"}
+authors = [
+    {name = "Claude Code", email = "claude@anthropic.com"},
+    {name = "CAUR-Technologies"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: Microsoft :: Windows",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "pyserial>=3.5",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "matplotlib>=3.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "flake8>=6.0",
+]
+ni = [
+    "nidaqmx>=0.6.5",
+]
+elf = [
+    "pefile>=2023.2.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/CAUR-Technologies/ADS1285_Automation"
+Repository = "https://github.com/CAUR-Technologies/ADS1285_Automation.git"
+"Bug Tracker" = "https://github.com/CAUR-Technologies/ADS1285_Automation/issues"
+
+[tool.setuptools]
+packages = ["equipment", "config", "tests"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310', 'py311']
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

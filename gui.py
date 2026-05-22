@@ -1,0 +1,1140 @@
+"""
+Interface graphique pour le banc de test ADS1285 Automation.
+
+Permet de configurer tous les appareils (ADS1285, Wavetek, APS, accelerometre),
+d'effectuer des acquisitions unitaires ou des balayages frequentiels,
+et de visualiser les donnees dans des graphiques.
+
+Usage :
+    python gui.py
+"""
+
+import os
+import sys
+import time
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+from datetime import datetime
+
+import numpy as np
+import matplotlib
+matplotlib.use("TkAgg")
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+import config.config_manager as _cfg_mgr
+from config.settings import (
+    ADS1285_BRIDGE_PORT, ADS1285_SAMPLE_RATE, ADS1285_NUM_SAMPLES,
+    WAVETEK_PORT, WAVETEK_BAUD,
+    APS_CONTROLLER_VERTICAL_PORT, APS_CONTROLLER_HORIZONTAL_PORT,
+    NI_DEVICE_NAME, NI_AI_CHANNELS, NI_SAMPLE_RATE, NI_SAMPLES_PER_CHANNEL,
+    DATA_OUTPUT_DIR,
+)
+from equipment.ads1285 import ADS1285
+from equipment.wavetek import Wavetek39A
+from equipment.aps import APSController
+try:
+    from equipment.accelerometer import Accelerometer
+    _HAS_NIDAQMX = True
+except ImportError:
+    _HAS_NIDAQMX = False
+    Accelerometer = None
+
+
+# ---------------------------------------------------------------------------
+# Utilitaires
+# ---------------------------------------------------------------------------
+
+def compute_fft(samples, sample_rate):
+    """Retourne (frequences_hz, magnitudes_dB) sans le bin DC."""
+    arr = np.array(samples, dtype=np.float64)
+    arr -= arr.mean()
+    window = np.hanning(len(arr))
+    arr *= window
+    spectrum = np.fft.rfft(arr)
+    freqs = np.fft.rfftfreq(len(arr), d=1.0 / sample_rate)
+    magnitude = np.abs(spectrum) * 2.0 / len(arr)
+    magnitude_db = 20 * np.log10(magnitude + 1e-12)
+    return freqs[1:], magnitude_db[1:]
+
+
+# ---------------------------------------------------------------------------
+# WorkerThread — execute une tache en arriere-plan
+# ---------------------------------------------------------------------------
+
+class WorkerThread(threading.Thread):
+    """Execute *target_fn* dans un thread daemon, poste le resultat via root.after()."""
+
+    def __init__(self, app, target_fn, callback_ok, callback_err, *args):
+        super().__init__(daemon=True)
+        self._app = app
+        self._fn = target_fn
+        self._args = args
+        self._cb_ok = callback_ok
+        self._cb_err = callback_err
+
+    def run(self):
+        try:
+            result = self._fn(*self._args)
+            self._app.after(0, self._cb_ok, result)
+        except Exception as exc:
+            self._app.after(0, self._cb_err, exc)
+
+
+# ---------------------------------------------------------------------------
+# DeviceManager — gere le cycle de vie des equipements
+# ---------------------------------------------------------------------------
+
+class DeviceManager:
+    """Instancie, connecte et deconnecte les equipements."""
+
+    DEVICE_NAMES = [
+        "ads1285", "wavetek",
+        "aps_ctrl_v", "aps_ctrl_h",
+        "accel",
+    ]
+
+    def __init__(self):
+        self.instances = {n: None for n in self.DEVICE_NAMES}
+        self.connected = {n: False for n in self.DEVICE_NAMES}
+
+    # --- connexion individuelle ---
+
+    def connect_ads1285(self, port, sample_rate, num_samples):
+        dev = ADS1285(port=port, sample_rate=sample_rate, num_samples=num_samples)
+        dev.connect()
+        self.instances["ads1285"] = dev
+        self.connected["ads1285"] = True
+
+    def disconnect_ads1285(self):
+        dev = self.instances.get("ads1285")
+        if dev:
+            dev.disconnect()
+        self.instances["ads1285"] = None
+        self.connected["ads1285"] = False
+
+    def connect_wavetek(self, port, baud):
+        dev = Wavetek39A(port=port, baud=baud)
+        dev.connect()
+        self.instances["wavetek"] = dev
+        self.connected["wavetek"] = True
+
+    def disconnect_wavetek(self):
+        dev = self.instances.get("wavetek")
+        if dev:
+            dev.disconnect()
+        self.instances["wavetek"] = None
+        self.connected["wavetek"] = False
+
+    def connect_aps_ctrl(self, axis, port):
+        key = "aps_ctrl_v" if axis == "vertical" else "aps_ctrl_h"
+        dev = APSController(axis=axis, port=port)
+        dev.connect()
+        self.instances[key] = dev
+        self.connected[key] = True
+
+    def disconnect_aps_ctrl(self, axis):
+        key = "aps_ctrl_v" if axis == "vertical" else "aps_ctrl_h"
+        dev = self.instances.get(key)
+        if dev:
+            dev.disconnect()
+        self.instances[key] = None
+        self.connected[key] = False
+
+    def connect_accel(self, device, channels, sample_rate, samples_per_channel):
+        if not _HAS_NIDAQMX:
+            raise RuntimeError("Module nidaqmx non disponible "
+                               "(installez NI-DAQmx + pip install nidaqmx)")
+        dev = Accelerometer(device=device, channels=channels,
+                            sample_rate=sample_rate,
+                            samples_per_channel=samples_per_channel)
+        dev.connect()
+        self.instances["accel"] = dev
+        self.connected["accel"] = True
+
+    def disconnect_accel(self):
+        dev = self.instances.get("accel")
+        if dev:
+            dev.disconnect()
+        self.instances["accel"] = None
+        self.connected["accel"] = False
+
+    def disconnect_all(self):
+        for name in self.DEVICE_NAMES:
+            dev = self.instances.get(name)
+            if dev:
+                try:
+                    dev.disconnect()
+                except Exception:
+                    pass
+            self.instances[name] = None
+            self.connected[name] = False
+
+
+# ---------------------------------------------------------------------------
+# Panneau gauche scrollable
+# ---------------------------------------------------------------------------
+
+class ScrollableFrame(ttk.Frame):
+    """Frame avec scrollbar verticale interne."""
+
+    def __init__(self, parent, width=300, **kw):
+        super().__init__(parent, **kw)
+        self._canvas = tk.Canvas(self, width=width, highlightthickness=0)
+        self._scrollbar = ttk.Scrollbar(self, orient="vertical",
+                                         command=self._canvas.yview)
+        self.inner = ttk.Frame(self._canvas)
+        self.inner.bind("<Configure>",
+                        lambda _: self._canvas.configure(
+                            scrollregion=self._canvas.bbox("all")))
+        self._canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self._canvas.configure(yscrollcommand=self._scrollbar.set)
+        self._scrollbar.pack(side="right", fill="y")
+        self._canvas.pack(side="left", fill="both", expand=True)
+        self._canvas.bind("<Enter>", self._bind_mousewheel)
+        self._canvas.bind("<Leave>", self._unbind_mousewheel)
+
+    def _bind_mousewheel(self, _):
+        self._canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _unbind_mousewheel(self, _):
+        self._canvas.unbind_all("<MouseWheel>")
+
+    def _on_mousewheel(self, event):
+        self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+
+# ---------------------------------------------------------------------------
+# Application principale
+# ---------------------------------------------------------------------------
+
+class Application(tk.Tk):
+
+    def __init__(self):
+        super().__init__()
+        self.title("ADS1285 Automation")
+        self.geometry("1400x850")
+        self.minsize(1100, 700)
+
+        self._dm = DeviceManager()
+        self._busy = False
+        self._stop_event = threading.Event()
+
+        # Donnees d'acquisition
+        self._last_adc = None          # list[int]
+        self._last_accel = None        # np.ndarray | None
+        self._last_rate = ADS1285_SAMPLE_RATE
+        self._sweep_results = {}       # {freq: {"adc": [...], "accel": array}}
+
+        # Variables tkinter
+        self._vars = {}
+
+        self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ===================================================================
+    # Construction de l'interface
+    # ===================================================================
+
+    def _build_ui(self):
+        # PanedWindow horizontal : gauche (config) | droite (graphiques)
+        paned = ttk.PanedWindow(self, orient="horizontal")
+        paned.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # --- Panneau gauche (scrollable) ---
+        self._left = ScrollableFrame(paned, width=310)
+        paned.add(self._left, weight=0)
+        self._build_left_panel()
+
+        # --- Panneau droit ---
+        right = ttk.Frame(paned)
+        paned.add(right, weight=1)
+        self._build_right_panel(right)
+
+        # --- Barre d'actions ---
+        self._build_action_bar()
+
+        # --- Barre de statut ---
+        self._build_status_bar()
+
+    # ---------------------------------------------------------------
+    # Panneau gauche — sections appareils
+    # ---------------------------------------------------------------
+
+    def _build_left_panel(self):
+        parent = self._left.inner
+
+        # ADS1285
+        self._build_ads1285_section(parent)
+        # Wavetek
+        self._build_wavetek_section(parent)
+        # APS (sélecteur d'axe commun + Contrôleur + Amplificateur)
+        self._build_aps_section(parent)
+        # Accelerometre
+        self._build_accel_section(parent)
+
+    def _make_var(self, key, default=""):
+        var = tk.StringVar(value=str(default))
+        self._vars[key] = var
+        return var
+
+    def _row(self, parent, label_text, var, row, combo_values=None, width=12):
+        ttk.Label(parent, text=label_text).grid(row=row, column=0,
+                                                 sticky="w", padx=2, pady=2)
+        if combo_values:
+            w = ttk.Combobox(parent, textvariable=var, values=combo_values,
+                             width=width, state="readonly")
+        else:
+            w = ttk.Entry(parent, textvariable=var, width=width + 2)
+        w.grid(row=row, column=1, sticky="ew", padx=2, pady=2)
+        return w
+
+    # --- ADS1285 ---
+
+    def _build_ads1285_section(self, parent):
+        lf = ttk.LabelFrame(parent, text="  ADS1285 EVM")
+        lf.pack(fill="x", padx=4, pady=3)
+        f = ttk.Frame(lf)
+        f.pack(fill="x", padx=5, pady=5)
+        f.columnconfigure(1, weight=1)
+
+        self._row(f, "Port bridge :", self._make_var("ads_port", ADS1285_BRIDGE_PORT), 0)
+        self._row(f, "Taux (SPS) :", self._make_var("ads_rate", ADS1285_SAMPLE_RATE), 1,
+                  combo_values=["250", "500", "1000", "2000", "4000"])
+        self._row(f, "Nb echantillons :", self._make_var("ads_count", ADS1285_NUM_SAMPLES), 2,
+                  combo_values=["256", "512", "1024", "2048", "4096", "8192"])
+
+        bf = ttk.Frame(lf)
+        bf.pack(fill="x", padx=5, pady=(0, 5))
+        self._btn_ads_connect = ttk.Button(bf, text="Connecter",
+                                            command=self._toggle_ads1285)
+        self._btn_ads_connect.pack(side="left")
+
+    # --- Wavetek ---
+
+    def _build_wavetek_section(self, parent):
+        lf = ttk.LabelFrame(parent, text="  Wavetek 39A")
+        lf.pack(fill="x", padx=4, pady=3)
+        f = ttk.Frame(lf)
+        f.pack(fill="x", padx=5, pady=5)
+        f.columnconfigure(1, weight=1)
+
+        self._row(f, "Port :", self._make_var("wav_port", WAVETEK_PORT), 0)
+        self._row(f, "Forme d'onde :", self._make_var("wav_wave", "sine"), 1,
+                  combo_values=["sine", "square", "triangle", "ramp",
+                                "pulse", "noise", "dc"])
+        self._row(f, "Frequence (Hz) :", self._make_var("wav_freq", "10.0"), 2)
+        self._row(f, "Amplitude (Vpp) :", self._make_var("wav_ampl", "1.0"), 3)
+        self._row(f, "Offset (V) :", self._make_var("wav_offset", "0.0"), 4)
+
+        bf = ttk.Frame(lf)
+        bf.pack(fill="x", padx=5, pady=(0, 5))
+        self._btn_wav_connect = ttk.Button(bf, text="Connecter",
+                                            command=self._toggle_wavetek)
+        self._btn_wav_connect.pack(side="left", padx=(0, 5))
+        self._btn_wav_output = ttk.Button(bf, text="Sortie ON",
+                                           command=self._toggle_wavetek_output,
+                                           state="disabled")
+        self._btn_wav_output.pack(side="left", padx=(0, 5))
+        self._btn_wav_apply = ttk.Button(bf, text="Appliquer",
+                                          command=self._apply_wavetek,
+                                          state="disabled")
+        self._btn_wav_apply.pack(side="left")
+        self._wav_output_on = False
+
+    # --- APS (sélecteur commun + Contrôleur + Amplificateur) ---
+
+    def _build_aps_section(self, parent):
+        # Données par axe
+        self._aps_ctrl_ports = {
+            "vertical":   APS_CONTROLLER_VERTICAL_PORT,
+            "horizontal": APS_CONTROLLER_HORIZONTAL_PORT,
+        }
+        self._aps_ctrl_positions = {"vertical": "0.0", "horizontal": "0.0"}
+
+        outer = ttk.LabelFrame(parent, text="  APS — Table de vibration")
+        outer.pack(fill="x", padx=4, pady=3)
+
+        # ── Sélecteur d'axe (partagé Ctrl + Amp) ──
+        sel = ttk.Frame(outer)
+        sel.pack(fill="x", padx=5, pady=(6, 4))
+        ttk.Label(sel, text="Axe :").pack(side="left", padx=(0, 8))
+        self._vars["aps_axis"] = tk.StringVar(value="vertical")
+        for val, txt in [("vertical", "Vertical"), ("horizontal", "Horizontal")]:
+            ttk.Radiobutton(sel, text=txt, variable=self._vars["aps_axis"],
+                            value=val,
+                            command=self._on_aps_axis_change).pack(
+                side="left", padx=6)
+
+        # Indicateurs de connexion V/H pour ctrl et amp
+        ind = ttk.Frame(outer)
+        ind.pack(fill="x", padx=8, pady=(0, 4))
+        ttk.Label(ind, text="Ctrl :").pack(side="left")
+        self._lbl_ctrl_v_ind = ttk.Label(ind, text="● V", foreground="gray")
+        self._lbl_ctrl_v_ind.pack(side="left", padx=(4, 8))
+        self._lbl_ctrl_h_ind = ttk.Label(ind, text="● H", foreground="gray")
+        self._lbl_ctrl_h_ind.pack(side="left")
+
+        ttk.Separator(outer, orient="horizontal").pack(fill="x", padx=5, pady=3)
+
+        # ── Contrôleur ──
+        ttk.Label(outer, text="Contrôleur (APS 0109)",
+                  font=("", 9, "bold")).pack(anchor="w", padx=8, pady=(4, 0))
+        fc = ttk.Frame(outer)
+        fc.pack(fill="x", padx=8, pady=3)
+        fc.columnconfigure(1, weight=1)
+        self._row(fc, "Port :",
+                  self._make_var("aps_ctrl_port", APS_CONTROLLER_VERTICAL_PORT), 0)
+        self._row(fc, "Position (mm) :",
+                  self._make_var("aps_ctrl_pos", "0.0"), 1)
+        bfc = ttk.Frame(outer)
+        bfc.pack(fill="x", padx=8, pady=(0, 6))
+        self._btn_aps_ctrl_connect = ttk.Button(bfc, text="Connecter",
+                                                 command=self._toggle_aps_ctrl_active)
+        self._btn_aps_ctrl_connect.pack(side="left", padx=(0, 5))
+        self._btn_aps_ctrl_pos = ttk.Button(bfc, text="Positionner",
+                                             state="disabled",
+                                             command=self._set_aps_ctrl_active)
+        self._btn_aps_ctrl_pos.pack(side="left")
+
+
+    def _on_aps_axis_change(self):
+        """Permute les champs Ctrl vers le nouvel axe."""
+        prev = getattr(self, "_aps_prev_axis", None)
+        if prev:
+            self._aps_ctrl_ports[prev]    = self._vars["aps_ctrl_port"].get()
+            self._aps_ctrl_positions[prev] = self._vars["aps_ctrl_pos"].get()
+
+        axis = self._vars["aps_axis"].get()
+        self._aps_prev_axis = axis
+        self._vars["aps_ctrl_port"].set(self._aps_ctrl_ports[axis])
+        self._vars["aps_ctrl_pos"].set(self._aps_ctrl_positions[axis])
+
+        # Mettre a jour les boutons selon l'etat de connexion de cet axe
+        ctrl_key = "aps_ctrl_v" if axis == "vertical" else "aps_ctrl_h"
+        ctrl_conn = self._dm.connected.get(ctrl_key, False)
+        self._btn_aps_ctrl_connect.configure(
+            text="Deconnecter" if ctrl_conn else "Connecter")
+        self._btn_aps_ctrl_pos.configure(
+            state="normal" if ctrl_conn else "disabled")
+
+    def _toggle_aps_ctrl_active(self):
+        self._toggle_aps_ctrl(self._vars["aps_axis"].get())
+
+    def _set_aps_ctrl_active(self):
+        self._set_aps_position(self._vars["aps_axis"].get())
+
+    # --- Accelerometre ---
+
+    def _build_accel_section(self, parent):
+        lf = ttk.LabelFrame(parent, text="  Accelerometre NI")
+        lf.pack(fill="x", padx=4, pady=3)
+        f = ttk.Frame(lf)
+        f.pack(fill="x", padx=5, pady=5)
+        f.columnconfigure(1, weight=1)
+
+        self._row(f, "Device :", self._make_var("accel_dev", NI_DEVICE_NAME), 0)
+        self._row(f, "Canaux :", self._make_var("accel_ch", NI_AI_CHANNELS), 1)
+        self._row(f, "Taux (Hz) :", self._make_var("accel_rate", NI_SAMPLE_RATE), 2)
+        self._row(f, "Ech./canal :", self._make_var("accel_spc", NI_SAMPLES_PER_CHANNEL), 3)
+
+        bf = ttk.Frame(lf)
+        bf.pack(fill="x", padx=5, pady=(0, 5))
+        self._btn_accel_connect = ttk.Button(bf, text="Connecter",
+                                              command=self._toggle_accel)
+        self._btn_accel_connect.pack(side="left")
+
+    # ---------------------------------------------------------------
+    # Panneau droit — graphiques matplotlib
+    # ---------------------------------------------------------------
+
+    def _build_right_panel(self, parent):
+        self._notebook = ttk.Notebook(parent)
+        self._notebook.pack(fill="both", expand=True)
+
+        # Onglet Temporel
+        tab_time = ttk.Frame(self._notebook)
+        self._notebook.add(tab_time, text="  Temporel  ")
+        self._fig_time = Figure(figsize=(8, 5), dpi=100)
+        self._ax_adc = self._fig_time.add_subplot(211)
+        self._ax_accel_t = self._fig_time.add_subplot(212)
+        self._ax_adc.set_title("ADS1285 — Domaine temporel")
+        self._ax_adc.set_xlabel("Temps (s)")
+        self._ax_adc.set_ylabel("Valeur brute")
+        self._ax_accel_t.set_title("Accelerometre")
+        self._ax_accel_t.set_xlabel("Temps (s)")
+        self._ax_accel_t.set_ylabel("Tension (V)")
+        self._fig_time.tight_layout()
+        self._canvas_time = FigureCanvasTkAgg(self._fig_time, master=tab_time)
+        self._canvas_time.get_tk_widget().pack(fill="both", expand=True)
+        self._toolbar_time = NavigationToolbar2Tk(self._canvas_time, tab_time)
+        self._toolbar_time.update()
+
+        # Onglet FFT
+        tab_fft = ttk.Frame(self._notebook)
+        self._notebook.add(tab_fft, text="  FFT  ")
+        self._fig_fft = Figure(figsize=(8, 5), dpi=100)
+        self._ax_fft_adc = self._fig_fft.add_subplot(211)
+        self._ax_fft_accel = self._fig_fft.add_subplot(212)
+        self._ax_fft_adc.set_title("FFT — ADS1285")
+        self._ax_fft_adc.set_xlabel("Frequence (Hz)")
+        self._ax_fft_adc.set_ylabel("Magnitude (dB)")
+        self._ax_fft_accel.set_title("FFT — Accelerometre")
+        self._ax_fft_accel.set_xlabel("Frequence (Hz)")
+        self._ax_fft_accel.set_ylabel("Magnitude (dB)")
+        self._fig_fft.tight_layout()
+        self._canvas_fft = FigureCanvasTkAgg(self._fig_fft, master=tab_fft)
+        self._canvas_fft.get_tk_widget().pack(fill="both", expand=True)
+        self._toolbar_fft = NavigationToolbar2Tk(self._canvas_fft, tab_fft)
+        self._toolbar_fft.update()
+
+        # Onglet Balayage
+        tab_sweep = ttk.Frame(self._notebook)
+        self._notebook.add(tab_sweep, text="  Balayage  ")
+        self._fig_sweep = Figure(figsize=(8, 5), dpi=100)
+        self._ax_sweep = self._fig_sweep.add_subplot(111)
+        self._ax_sweep.set_title("Reponse frequentielle")
+        self._ax_sweep.set_xlabel("Frequence (Hz)")
+        self._ax_sweep.set_ylabel("Amplitude crete ADC")
+        self._ax_sweep.set_xscale("log")
+        self._ax_sweep.grid(True, which="both", linestyle="--", alpha=0.5)
+        self._fig_sweep.tight_layout()
+        self._canvas_sweep = FigureCanvasTkAgg(self._fig_sweep, master=tab_sweep)
+        self._canvas_sweep.get_tk_widget().pack(fill="both", expand=True)
+        self._toolbar_sweep = NavigationToolbar2Tk(self._canvas_sweep, tab_sweep)
+        self._toolbar_sweep.update()
+
+    # ---------------------------------------------------------------
+    # Barre d'actions
+    # ---------------------------------------------------------------
+
+    def _build_action_bar(self):
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", padx=6, pady=(2, 0))
+
+        self._btn_connect_all = ttk.Button(bar, text="Connecter tout",
+                                            command=self._connect_all)
+        self._btn_connect_all.pack(side="left", padx=3)
+
+        self._btn_acquire = ttk.Button(bar, text="Acquisition",
+                                        command=self._do_acquire)
+        self._btn_acquire.pack(side="left", padx=3)
+
+        self._btn_sweep = ttk.Button(bar, text="Balayage",
+                                      command=self._do_sweep)
+        self._btn_sweep.pack(side="left", padx=3)
+
+        self._btn_save = ttk.Button(bar, text="Sauvegarder",
+                                     command=self._do_save)
+        self._btn_save.pack(side="left", padx=3)
+
+        self._btn_stop = ttk.Button(bar, text="Arreter",
+                                     command=self._do_stop, state="disabled")
+        self._btn_stop.pack(side="left", padx=3)
+
+        # Parametres balayage (inline)
+        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y",
+                                                    padx=8, pady=2)
+        ttk.Label(bar, text="Frequences :").pack(side="left", padx=(0, 3))
+        self._make_var("sweep_freqs", "1, 2, 5, 10, 20, 50, 100")
+        e = ttk.Entry(bar, textvariable=self._vars["sweep_freqs"], width=30)
+        e.pack(side="left", padx=(0, 5))
+        ttk.Label(bar, text="Stab. (s) :").pack(side="left")
+        self._make_var("sweep_stab", "2.0")
+        ttk.Entry(bar, textvariable=self._vars["sweep_stab"], width=5).pack(
+            side="left", padx=(0, 5))
+
+    # ---------------------------------------------------------------
+    # Barre de statut
+    # ---------------------------------------------------------------
+
+    def _build_status_bar(self):
+        bar = ttk.Frame(self, relief="sunken")
+        bar.pack(fill="x", padx=4, pady=(2, 4))
+
+        self._status_indicators = {}
+        labels = {
+            "ads1285": "ADS1285",
+            "wavetek": "Wavetek",
+            "aps_ctrl_v": "Ctrl V",
+            "aps_ctrl_h": "Ctrl H",
+            "accel": "Accel",
+        }
+        for key, text in labels.items():
+            lbl = ttk.Label(bar, text=f"\u25cf {text}", foreground="gray")
+            lbl.pack(side="left", padx=6)
+            self._status_indicators[key] = lbl
+
+        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y",
+                                                    padx=6, pady=2)
+        self._progress = ttk.Progressbar(bar, length=160, mode="determinate")
+        self._progress.pack(side="left", padx=4)
+        self._status_label = ttk.Label(bar, text="Pret")
+        self._status_label.pack(side="left", padx=6)
+
+    def _update_indicator(self, key, connected):
+        color = "green" if connected else "gray"
+        self._status_indicators[key].configure(foreground=color)
+
+    def _set_status(self, text):
+        self._status_label.configure(text=text)
+
+    def _set_busy(self, busy, allow_stop=False):
+        self._busy = busy
+        state = "disabled" if busy else "normal"
+        for btn in (self._btn_connect_all, self._btn_acquire,
+                    self._btn_sweep, self._btn_save):
+            btn.configure(state=state)
+        self._btn_stop.configure(state="normal" if (busy and allow_stop)
+                                  else "disabled")
+
+    # ===================================================================
+    # Connexion / deconnexion des appareils
+    # ===================================================================
+
+    def _toggle_ads1285(self):
+        if self._dm.connected["ads1285"]:
+            self._set_status("Deconnexion ADS1285...")
+            self._set_busy(True)
+            WorkerThread(self, self._dm.disconnect_ads1285,
+                         lambda _: self._on_device_toggled("ads1285", False),
+                         self._on_error).start()
+        else:
+            port = int(self._vars["ads_port"].get())
+            rate = int(self._vars["ads_rate"].get())
+            count = int(self._vars["ads_count"].get())
+            self._set_status("Connexion ADS1285...")
+            self._set_busy(True)
+            WorkerThread(self, self._dm.connect_ads1285,
+                         lambda _: self._on_device_toggled("ads1285", True),
+                         self._on_error, port, rate, count).start()
+
+    def _toggle_wavetek(self):
+        if self._dm.connected["wavetek"]:
+            self._set_busy(True)
+            WorkerThread(self, self._dm.disconnect_wavetek,
+                         lambda _: self._on_device_toggled("wavetek", False),
+                         self._on_error).start()
+        else:
+            port = self._vars["wav_port"].get()
+            baud = WAVETEK_BAUD
+            self._set_status("Connexion Wavetek...")
+            self._set_busy(True)
+            WorkerThread(self, self._dm.connect_wavetek,
+                         lambda _: self._on_device_toggled("wavetek", True),
+                         self._on_error, port, baud).start()
+
+    def _toggle_aps_ctrl(self, axis):
+        key = "aps_ctrl_v" if axis == "vertical" else "aps_ctrl_h"
+        if self._dm.connected[key]:
+            self._set_busy(True)
+            WorkerThread(self, self._dm.disconnect_aps_ctrl,
+                         lambda _, k=key: self._on_device_toggled(k, False),
+                         self._on_error, axis).start()
+        else:
+            if self._vars["aps_axis"].get() == axis:
+                port = self._vars["aps_ctrl_port"].get()
+                self._aps_ctrl_ports[axis] = port
+            else:
+                port = self._aps_ctrl_ports[axis]
+            self._set_status(f"Connexion APS Ctrl {axis}...")
+            self._set_busy(True)
+            WorkerThread(self, self._dm.connect_aps_ctrl,
+                         lambda _, k=key: self._on_device_toggled(k, True),
+                         self._on_error, axis, port).start()
+
+    def _toggle_accel(self):
+        if self._dm.connected["accel"]:
+            self._set_busy(True)
+            WorkerThread(self, self._dm.disconnect_accel,
+                         lambda _: self._on_device_toggled("accel", False),
+                         self._on_error).start()
+        else:
+            dev = self._vars["accel_dev"].get()
+            ch = self._vars["accel_ch"].get()
+            rate = int(self._vars["accel_rate"].get())
+            spc = int(self._vars["accel_spc"].get())
+            self._set_status("Connexion accelerometre...")
+            self._set_busy(True)
+            WorkerThread(self, self._dm.connect_accel,
+                         lambda _: self._on_device_toggled("accel", True),
+                         self._on_error, dev, ch, rate, spc).start()
+
+    def _on_device_toggled(self, key, connected):
+        self._dm.connected[key] = connected
+        self._update_indicator(key, connected)
+        self._set_busy(False)
+
+        if key == "ads1285":
+            self._btn_ads_connect.configure(
+                text="Deconnecter" if connected else "Connecter")
+
+        elif key == "wavetek":
+            self._btn_wav_connect.configure(
+                text="Deconnecter" if connected else "Connecter")
+            state = "normal" if connected else "disabled"
+            self._btn_wav_output.configure(state=state)
+            self._btn_wav_apply.configure(state=state)
+
+        elif key.startswith("aps_ctrl"):
+            axis = "vertical" if key == "aps_ctrl_v" else "horizontal"
+            lbl = self._lbl_ctrl_v_ind if axis == "vertical" else self._lbl_ctrl_h_ind
+            lbl.configure(foreground="green" if connected else "gray")
+            if self._vars["aps_axis"].get() == axis:
+                self._btn_aps_ctrl_connect.configure(
+                    text="Deconnecter" if connected else "Connecter")
+                self._btn_aps_ctrl_pos.configure(
+                    state="normal" if connected else "disabled")
+
+        elif key == "accel":
+            self._btn_accel_connect.configure(
+                text="Deconnecter" if connected else "Connecter")
+
+        self._set_status("Pret")
+
+    def _on_error(self, exc):
+        self._set_busy(False)
+        self._set_status("Erreur")
+        messagebox.showerror("Erreur", str(exc))
+
+    # --- Connecter tout ---
+
+    def _connect_all(self):
+        self._set_busy(True)
+        self._set_status("Connexion de tous les appareils...")
+
+        def _worker():
+            errors = []
+            # ADS1285
+            try:
+                port = int(self._vars["ads_port"].get())
+                rate = int(self._vars["ads_rate"].get())
+                count = int(self._vars["ads_count"].get())
+                self._dm.connect_ads1285(port, rate, count)
+                self.after(0, self._update_indicator, "ads1285", True)
+                self.after(0, self._btn_ads_connect.configure,
+                           {"text": "Deconnecter"})
+            except Exception as e:
+                errors.append(f"ADS1285: {e}")
+            # Wavetek
+            try:
+                self._dm.connect_wavetek(self._vars["wav_port"].get(),
+                                         WAVETEK_BAUD)
+                self.after(0, self._update_indicator, "wavetek", True)
+                self.after(0, self._btn_wav_connect.configure,
+                           {"text": "Deconnecter"})
+                self.after(0, self._btn_wav_output.configure,
+                           {"state": "normal"})
+                self.after(0, self._btn_wav_apply.configure,
+                           {"state": "normal"})
+            except Exception as e:
+                errors.append(f"Wavetek: {e}")
+            # APS Controllers
+            active_axis = self._vars["aps_axis"].get()
+            self._aps_ctrl_ports[active_axis] = self._vars["aps_ctrl_port"].get()
+            for axis, key in [("vertical", "aps_ctrl_v"),
+                              ("horizontal", "aps_ctrl_h")]:
+                try:
+                    self._dm.connect_aps_ctrl(axis, self._aps_ctrl_ports[axis])
+                    self.after(0, self._update_indicator, key, True)
+                    lbl = (self._lbl_ctrl_v_ind if axis == "vertical"
+                           else self._lbl_ctrl_h_ind)
+                    self.after(0, lbl.configure, {"foreground": "green"})
+                    if active_axis == axis:
+                        self.after(0, self._btn_aps_ctrl_connect.configure,
+                                   {"text": "Deconnecter"})
+                        self.after(0, self._btn_aps_ctrl_pos.configure,
+                                   {"state": "normal"})
+                except Exception as e:
+                    errors.append(f"APS Ctrl {axis}: {e}")
+            # Accelerometre
+            try:
+                dev = self._vars["accel_dev"].get()
+                ch = self._vars["accel_ch"].get()
+                rate = int(self._vars["accel_rate"].get())
+                spc = int(self._vars["accel_spc"].get())
+                self._dm.connect_accel(dev, ch, rate, spc)
+                self.after(0, self._update_indicator, "accel", True)
+                self.after(0, self._btn_accel_connect.configure,
+                           {"text": "Deconnecter"})
+            except Exception as e:
+                errors.append(f"Accelerometre: {e}")
+            return errors
+
+        def _on_done(errors):
+            self._set_busy(False)
+            if errors:
+                self._set_status(f"{len(errors)} erreur(s) de connexion")
+                messagebox.showwarning("Connexion partielle",
+                                       "\n".join(errors))
+            else:
+                self._set_status("Tous les appareils connectes")
+
+        WorkerThread(self, _worker, _on_done, self._on_error).start()
+
+    # ===================================================================
+    # Actions Wavetek / APS
+    # ===================================================================
+
+    def _toggle_wavetek_output(self):
+        dev = self._dm.instances.get("wavetek")
+        if not dev:
+            return
+        if self._wav_output_on:
+            dev.disable_output()
+            self._btn_wav_output.configure(text="Sortie ON")
+            self._wav_output_on = False
+        else:
+            dev.enable_output()
+            self._btn_wav_output.configure(text="Sortie OFF")
+            self._wav_output_on = True
+
+    def _apply_wavetek(self):
+        dev = self._dm.instances.get("wavetek")
+        if not dev:
+            return
+        try:
+            dev.set_waveform(self._vars["wav_wave"].get())
+            dev.set_frequency(float(self._vars["wav_freq"].get()))
+            dev.set_amplitude(float(self._vars["wav_ampl"].get()))
+            dev.set_offset(float(self._vars["wav_offset"].get()))
+            self._set_status("Wavetek configure")
+        except Exception as e:
+            messagebox.showerror("Wavetek", str(e))
+
+    def _set_aps_position(self, axis):
+        key = "aps_ctrl_v" if axis == "vertical" else "aps_ctrl_h"
+        dev = self._dm.instances.get(key)
+        if not dev:
+            return
+        try:
+            pos = float(self._vars["aps_ctrl_pos"].get())
+            self._aps_ctrl_positions[axis] = str(pos)
+            dev.set_position(pos)
+            self._set_status(f"APS Ctrl {axis} -> {pos} mm")
+        except Exception as e:
+            messagebox.showerror("APS", str(e))
+
+    # ===================================================================
+    # Acquisition unitaire
+    # ===================================================================
+
+    def _do_acquire(self):
+        if not self._dm.connected["ads1285"]:
+            messagebox.showwarning("Acquisition",
+                                   "ADS1285 non connecte.")
+            return
+        rate = int(self._vars["ads_rate"].get())
+        count = int(self._vars["ads_count"].get())
+        self._last_rate = rate
+        self._set_busy(True)
+        self._set_status(f"Acquisition {count} ech. @ {rate} SPS...")
+        self._progress.configure(mode="indeterminate")
+        self._progress.start(20)
+
+        def _worker():
+            adc_data = self._dm.instances["ads1285"].acquire(count, rate)
+            accel_data = None
+            if self._dm.connected.get("accel") and self._dm.instances.get("accel"):
+                accel_data = self._dm.instances["accel"].acquire()
+            return adc_data, accel_data
+
+        def _on_done(result):
+            adc_data, accel_data = result
+            self._last_adc = adc_data
+            self._last_accel = accel_data
+            self._progress.stop()
+            self._progress.configure(mode="determinate", value=0)
+            self._set_busy(False)
+            self._set_status(f"{len(adc_data)} echantillons acquis")
+            self._update_time_plot()
+            self._update_fft_plot()
+            self._notebook.select(0)  # aller sur l'onglet Temporel
+
+        def _on_err(exc):
+            self._progress.stop()
+            self._progress.configure(mode="determinate", value=0)
+            self._on_error(exc)
+
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
+    # ===================================================================
+    # Balayage frequentiel
+    # ===================================================================
+
+    def _do_sweep(self):
+        if not self._dm.connected["ads1285"]:
+            messagebox.showwarning("Balayage", "ADS1285 non connecte.")
+            return
+        if not self._dm.connected.get("wavetek"):
+            messagebox.showwarning("Balayage", "Wavetek non connecte.")
+            return
+
+        try:
+            freqs = [float(f.strip())
+                     for f in self._vars["sweep_freqs"].get().split(",")]
+            stab = float(self._vars["sweep_stab"].get())
+        except ValueError:
+            messagebox.showerror("Balayage",
+                                 "Frequences ou stabilisation invalides.")
+            return
+
+        rate = int(self._vars["ads_rate"].get())
+        count = int(self._vars["ads_count"].get())
+        self._last_rate = rate
+        self._sweep_results = {}
+        self._stop_event.clear()
+        self._set_busy(True, allow_stop=True)
+        self._progress.configure(mode="determinate", maximum=len(freqs), value=0)
+        self._notebook.select(2)  # aller sur l'onglet Balayage
+
+        # Configurer le Wavetek
+        wav = self._dm.instances["wavetek"]
+        wav.set_waveform(self._vars["wav_wave"].get())
+        wav.set_amplitude(float(self._vars["wav_ampl"].get()))
+
+        def _worker():
+            for i, freq in enumerate(freqs):
+                if self._stop_event.is_set():
+                    break
+                self.after(0, self._set_status,
+                           f"Balayage {i+1}/{len(freqs)} — {freq} Hz")
+                wav.set_frequency(freq)
+                time.sleep(stab)
+                if self._stop_event.is_set():
+                    break
+                adc_data = self._dm.instances["ads1285"].acquire(count, rate)
+                accel_data = None
+                if (self._dm.connected.get("accel")
+                        and self._dm.instances.get("accel")):
+                    accel_data = self._dm.instances["accel"].acquire()
+                self.after(0, self._on_sweep_point, freq, adc_data,
+                           accel_data, i + 1)
+            return None
+
+        def _on_done(_):
+            self._set_busy(False)
+            self._set_status("Balayage termine")
+
+        WorkerThread(self, _worker, _on_done, self._on_error).start()
+
+    def _on_sweep_point(self, freq, adc_data, accel_data, step):
+        self._sweep_results[freq] = {"adc": adc_data, "accel": accel_data}
+        self._progress.configure(value=step)
+        # Mettre a jour le graphique balayage
+        freqs_done = sorted(self._sweep_results.keys())
+        adc_peaks = [max(abs(v) for v in self._sweep_results[f]["adc"])
+                     for f in freqs_done]
+        self._ax_sweep.clear()
+        self._ax_sweep.set_title("Reponse frequentielle")
+        self._ax_sweep.set_xlabel("Frequence (Hz)")
+        self._ax_sweep.set_ylabel("Amplitude crete ADC")
+        self._ax_sweep.set_xscale("log")
+        self._ax_sweep.grid(True, which="both", linestyle="--", alpha=0.5)
+        self._ax_sweep.plot(freqs_done, adc_peaks, "o-", color="tab:blue",
+                            label="ADC")
+        # Si on a des donnees accelerometre
+        if any(self._sweep_results[f]["accel"] is not None
+               for f in freqs_done):
+            accel_peaks = []
+            for f in freqs_done:
+                a = self._sweep_results[f]["accel"]
+                accel_peaks.append(float(np.max(np.abs(a))) if a is not None
+                                   else 0)
+            ax2 = self._ax_sweep.twinx()
+            ax2.plot(freqs_done, accel_peaks, "s--", color="tab:orange",
+                     label="Accel (V)")
+            ax2.set_ylabel("Amplitude accel. (V)")
+            ax2.legend(loc="upper left")
+        self._ax_sweep.legend(loc="upper right")
+        self._canvas_sweep.draw_idle()
+
+    def _do_stop(self):
+        self._stop_event.set()
+        self._set_status("Arret demande...")
+
+    # ===================================================================
+    # Mise a jour des graphiques
+    # ===================================================================
+
+    def _update_time_plot(self):
+        data = self._last_adc
+        if data is None:
+            return
+        rate = self._last_rate
+        t = np.arange(len(data)) / rate
+
+        self._ax_adc.clear()
+        self._ax_adc.set_title("ADS1285 — Domaine temporel")
+        self._ax_adc.set_xlabel("Temps (s)")
+        self._ax_adc.set_ylabel("Valeur brute")
+        self._ax_adc.plot(t, data, linewidth=0.5, color="tab:blue")
+        self._ax_adc.grid(True, linestyle="--", alpha=0.4)
+
+        self._ax_accel_t.clear()
+        self._ax_accel_t.set_title("Accelerometre")
+        self._ax_accel_t.set_xlabel("Temps (s)")
+        self._ax_accel_t.set_ylabel("Tension (V)")
+        if self._last_accel is not None:
+            accel = self._last_accel
+            accel_rate = int(self._vars["accel_rate"].get())
+            n = accel.shape[1] if accel.ndim == 2 else len(accel)
+            ta = np.arange(n) / accel_rate
+            if accel.ndim == 2:
+                for ch in range(accel.shape[0]):
+                    self._ax_accel_t.plot(ta, accel[ch], linewidth=0.5,
+                                          label=f"ch{ch}")
+                self._ax_accel_t.legend(fontsize=8)
+            else:
+                self._ax_accel_t.plot(ta, accel, linewidth=0.5)
+        self._ax_accel_t.grid(True, linestyle="--", alpha=0.4)
+
+        self._fig_time.tight_layout()
+        self._canvas_time.draw_idle()
+
+    def _update_fft_plot(self):
+        data = self._last_adc
+        if data is None:
+            return
+        rate = self._last_rate
+        freqs, mag = compute_fft(data, rate)
+
+        self._ax_fft_adc.clear()
+        self._ax_fft_adc.set_title("FFT — ADS1285")
+        self._ax_fft_adc.set_xlabel("Frequence (Hz)")
+        self._ax_fft_adc.set_ylabel("Magnitude (dB)")
+        self._ax_fft_adc.plot(freqs, mag, linewidth=0.5, color="tab:blue")
+        self._ax_fft_adc.grid(True, linestyle="--", alpha=0.4)
+
+        self._ax_fft_accel.clear()
+        self._ax_fft_accel.set_title("FFT — Accelerometre")
+        self._ax_fft_accel.set_xlabel("Frequence (Hz)")
+        self._ax_fft_accel.set_ylabel("Magnitude (dB)")
+        if self._last_accel is not None:
+            accel = self._last_accel
+            accel_rate = int(self._vars["accel_rate"].get())
+            if accel.ndim == 2:
+                for ch in range(accel.shape[0]):
+                    af, am = compute_fft(accel[ch], accel_rate)
+                    self._ax_fft_accel.plot(af, am, linewidth=0.5,
+                                            label=f"ch{ch}")
+                self._ax_fft_accel.legend(fontsize=8)
+            else:
+                af, am = compute_fft(accel, accel_rate)
+                self._ax_fft_accel.plot(af, am, linewidth=0.5)
+        self._ax_fft_accel.grid(True, linestyle="--", alpha=0.4)
+
+        self._fig_fft.tight_layout()
+        self._canvas_fft.draw_idle()
+
+    # ===================================================================
+    # Sauvegarde
+    # ===================================================================
+
+    def _do_save(self):
+        if self._last_adc is None and not self._sweep_results:
+            messagebox.showinfo("Sauvegarder",
+                                "Aucune donnee a sauvegarder.")
+            return
+
+        path = filedialog.asksaveasfilename(
+            initialdir=DATA_OUTPUT_DIR,
+            initialfile=f"mesure_{datetime.now():%Y%m%d_%H%M%S}",
+            filetypes=[("CSV", "*.csv"), ("NumPy NPZ", "*.npz")],
+            defaultextension=".csv",
+        )
+        if not path:
+            return
+
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+        if path.endswith(".npz"):
+            self._save_npz(path)
+        else:
+            self._save_csv(path)
+
+        self._set_status(f"Sauvegarde : {os.path.basename(path)}")
+
+    def _save_csv(self, path):
+        rate = self._last_rate
+        if self._sweep_results:
+            # Sauvegarde du balayage en CSV
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("freq_hz,adc_peak")
+                has_accel = any(v["accel"] is not None
+                                for v in self._sweep_results.values())
+                if has_accel:
+                    f.write(",accel_peak_v")
+                f.write("\n")
+                for freq in sorted(self._sweep_results.keys()):
+                    d = self._sweep_results[freq]
+                    peak = max(abs(v) for v in d["adc"])
+                    f.write(f"{freq},{peak}")
+                    if has_accel and d["accel"] is not None:
+                        f.write(f",{float(np.max(np.abs(d['accel']))):.6f}")
+                    elif has_accel:
+                        f.write(",")
+                    f.write("\n")
+        elif self._last_adc is not None:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("index,time_s,value\n")
+                for i, val in enumerate(self._last_adc):
+                    f.write(f"{i},{i/rate:.9f},{val}\n")
+
+    def _save_npz(self, path):
+        save_dict = {}
+        if self._last_adc is not None:
+            save_dict["adc"] = np.array(self._last_adc, dtype=np.int32)
+            save_dict["sample_rate"] = np.array(self._last_rate)
+        if self._last_accel is not None:
+            save_dict["accel"] = self._last_accel
+        if self._sweep_results:
+            for freq in sorted(self._sweep_results.keys()):
+                d = self._sweep_results[freq]
+                key = f"f{freq:.1f}Hz"
+                save_dict[f"{key}_adc"] = np.array(d["adc"], dtype=np.int32)
+                if d["accel"] is not None:
+                    save_dict[f"{key}_accel"] = d["accel"]
+        np.savez(path, **save_dict)
+
+    # ===================================================================
+    # Fermeture
+    # ===================================================================
+
+    def _save_config(self):
+        """Persiste les valeurs des widgets dans config.ini."""
+        # Synchronise les champs APS de l'axe actif vers les dicts
+        axis = self._vars["aps_axis"].get()
+        self._aps_ctrl_ports[axis] = self._vars["aps_ctrl_port"].get()
+
+        sv = _cfg_mgr.set_value
+        sv("ADS1285", "bridge_port",  self._vars["ads_port"].get())
+        sv("ADS1285", "sample_rate",  self._vars["ads_rate"].get())
+        sv("ADS1285", "num_samples",  self._vars["ads_count"].get())
+        sv("Wavetek",  "port",         self._vars["wav_port"].get())
+        sv("APS", "controller_vertical_port",   self._aps_ctrl_ports["vertical"])
+        sv("APS", "controller_horizontal_port", self._aps_ctrl_ports["horizontal"])
+        sv("NI",  "device_name",         self._vars["accel_dev"].get())
+        sv("NI",  "ai_channels",         self._vars["accel_ch"].get())
+        sv("NI",  "sample_rate",         self._vars["accel_rate"].get())
+        sv("NI",  "samples_per_channel", self._vars["accel_spc"].get())
+        _cfg_mgr.save()
+
+    def _on_close(self):
+        self._stop_event.set()
+        self._set_status("Fermeture...")
+        self.update_idletasks()
+        self._save_config()
+        self._dm.disconnect_all()
+        self.destroy()
+
+
+# ---------------------------------------------------------------------------
+# Point d'entree
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    app = Application()
+    app.mainloop()

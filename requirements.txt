@@ -1,0 +1,6 @@
+pyserial>=3.5
+nidaqmx>=0.6.5
+pefile>=2023.2.7
+numpy>=1.24.0
+scipy>=1.10.0
+matplotlib>=3.7.0
