@@ -30,11 +30,13 @@ from config.settings import (
     WAVETEK_PORT, WAVETEK_BAUD,
     APS_CONTROLLER_VERTICAL_PORT, APS_CONTROLLER_HORIZONTAL_PORT,
     NI_DEVICE_NAME, NI_AI_CHANNELS, NI_SAMPLE_RATE, NI_SAMPLES_PER_CHANNEL,
+    SHAKER_ENVELOPE_FRACTION, SHAKER_ACCEL_CAP_G,
     DATA_OUTPUT_DIR,
 )
 from equipment.ads1285 import ADS1285
 from equipment.wavetek import Wavetek39A
 from equipment.aps import APSController
+from equipment.testbench import TestBench, TestBenchAborted
 try:
     from equipment.accelerometer import Accelerometer
     _HAS_NIDAQMX = True
@@ -172,6 +174,38 @@ class DeviceManager:
             self.instances[name] = None
             self.connected[name] = False
 
+    def make_testbench(self, axis: str,
+                       fraction: float | None = None,
+                       accel_cap_g: float | None = None) -> TestBench:
+        """Construit un TestBench a partir des instruments connectes.
+
+        Wavetek + APS (axe actif) + accelerometre sont requis ; l'ADS1285
+        (geophone) est optionnel (sensibilite calculee seulement si present).
+        Leve RuntimeError en listant ce qui manque.
+        """
+        missing = []
+        wav = self.instances.get("wavetek")
+        if not (wav and self.connected["wavetek"]):
+            missing.append("Wavetek")
+        accel = self.instances.get("accel")
+        if not (accel and self.connected["accel"]):
+            missing.append("Accelerometre")
+        ctrl_key = "aps_ctrl_v" if axis == "vertical" else "aps_ctrl_h"
+        aps = self.instances.get(ctrl_key)
+        if not (aps and self.connected[ctrl_key]):
+            missing.append(f"APS Ctrl {axis}")
+        if missing:
+            raise RuntimeError("Calibration impossible — non connecte : "
+                               + ", ".join(missing))
+
+        ads = self.instances.get("ads1285") if self.connected["ads1285"] else None
+        kw = {}
+        if fraction is not None:
+            kw["envelope_fraction"] = fraction
+        if accel_cap_g is not None:
+            kw["accel_cap_g"] = accel_cap_g
+        return TestBench(wav, aps, accel, ads, **kw)
+
 
 # ---------------------------------------------------------------------------
 # Panneau gauche scrollable
@@ -274,6 +308,28 @@ class Application(tk.Tk):
         self._build_aps_section(parent)
         # Accelerometre
         self._build_accel_section(parent)
+        # Calibration banc (sweep géophone)
+        self._build_calibration_section(parent)
+
+    def _build_calibration_section(self, parent):
+        lf = ttk.LabelFrame(parent, text="  Calibration banc")
+        lf.pack(fill="x", padx=4, pady=3)
+        f = ttk.Frame(lf)
+        f.pack(fill="x", padx=5, pady=5)
+        f.columnconfigure(1, weight=1)
+
+        self._row(f, "Fraction env. :",
+                  self._make_var("cal_fraction", SHAKER_ENVELOPE_FRACTION), 0)
+        self._row(f, "Plafond (g) :",
+                  self._make_var("cal_cap", SHAKER_ACCEL_CAP_G), 1)
+
+        bf = ttk.Frame(lf)
+        bf.pack(fill="x", padx=5, pady=(0, 5))
+        self._btn_cal_zero = ttk.Button(bf, text="Centrage ZER",
+                                        command=self._center_zero)
+        self._btn_cal_zero.pack(side="left")
+        ttk.Label(lf, text="(Balayage = sweep calibration géophone)",
+                  font=("", 8)).pack(anchor="w", padx=6, pady=(0, 4))
 
     def _make_var(self, key, default=""):
         var = tk.StringVar(value=str(default))
@@ -503,9 +559,9 @@ class Application(tk.Tk):
         self._notebook.add(tab_sweep, text="  Balayage  ")
         self._fig_sweep = Figure(figsize=(8, 5), dpi=100)
         self._ax_sweep = self._fig_sweep.add_subplot(111)
-        self._ax_sweep.set_title("Reponse frequentielle")
+        self._ax_sweep.set_title("Sensibilite geophone vs frequence")
         self._ax_sweep.set_xlabel("Frequence (Hz)")
-        self._ax_sweep.set_ylabel("Amplitude crete ADC")
+        self._ax_sweep.set_ylabel("Sensibilite (counts/g)")
         self._ax_sweep.set_xscale("log")
         self._ax_sweep.grid(True, which="both", linestyle="--", alpha=0.5)
         self._fig_sweep.tight_layout()
@@ -593,10 +649,16 @@ class Application(tk.Tk):
         self._busy = busy
         state = "disabled" if busy else "normal"
         for btn in (self._btn_connect_all, self._btn_acquire,
-                    self._btn_sweep, self._btn_save):
+                    self._btn_sweep, self._btn_save, self._btn_cal_zero):
             btn.configure(state=state)
         self._btn_stop.configure(state="normal" if (busy and allow_stop)
                                   else "disabled")
+        # Le bouton "Tester ADC" suit l'etat de connexion quand on n'est pas occupe
+        if busy:
+            self._btn_ads_test.configure(state="disabled")
+        else:
+            self._btn_ads_test.configure(
+                state="normal" if self._dm.connected["ads1285"] else "disabled")
 
     # ===================================================================
     # Connexion / deconnexion des appareils
@@ -920,20 +982,22 @@ class Application(tk.Tk):
     # ===================================================================
 
     def _do_sweep(self):
-        if not self._dm.connected["ads1285"]:
-            messagebox.showwarning("Balayage", "ADS1285 non connecte.")
-            return
-        if not self._dm.connected.get("wavetek"):
-            messagebox.showwarning("Balayage", "Wavetek non connecte.")
+        """Sweep de calibration géophone piloté par le TestBench (banc complet)."""
+        axis = self._vars["aps_axis"].get()
+        try:
+            fraction = float(self._vars["cal_fraction"].get())
+            cap = float(self._vars["cal_cap"].get())
+            bench = self._dm.make_testbench(axis, fraction=fraction,
+                                            accel_cap_g=cap)
+        except (ValueError, RuntimeError) as e:
+            messagebox.showwarning("Calibration", str(e))
             return
 
         try:
             freqs = [float(f.strip())
                      for f in self._vars["sweep_freqs"].get().split(",")]
-            stab = float(self._vars["sweep_stab"].get())
         except ValueError:
-            messagebox.showerror("Balayage",
-                                 "Frequences ou stabilisation invalides.")
+            messagebox.showerror("Calibration", "Fréquences invalides.")
             return
 
         rate = int(self._vars["ads_rate"].get())
@@ -943,68 +1007,82 @@ class Application(tk.Tk):
         self._stop_event.clear()
         self._set_busy(True, allow_stop=True)
         self._progress.configure(mode="determinate", maximum=len(freqs), value=0)
-        self._notebook.select(2)  # aller sur l'onglet Balayage
+        self._notebook.select(2)  # onglet Balayage
 
-        # Configurer le Wavetek
-        wav = self._dm.instances["wavetek"]
-        wav.set_waveform(self._vars["wav_wave"].get())
-        wav.set_amplitude(float(self._vars["wav_ampl"].get()))
+        bench.set_stop_event(self._stop_event)
+        bench.set_logger(lambda m: self.after(0, self._set_status, m))
 
         def _worker():
-            for i, freq in enumerate(freqs):
-                if self._stop_event.is_set():
-                    break
-                self.after(0, self._set_status,
-                           f"Balayage {i+1}/{len(freqs)} — {freq} Hz")
-                wav.set_frequency(freq)
-                time.sleep(stab)
-                if self._stop_event.is_set():
-                    break
-                adc_data = self._dm.instances["ads1285"].acquire(count, rate)
-                accel_data = None
-                if (self._dm.connected.get("accel")
-                        and self._dm.instances.get("accel")):
-                    accel_data = self._dm.instances["accel"].acquire()
-                self.after(0, self._on_sweep_point, freq, adc_data,
-                           accel_data, i + 1)
-            return None
+            return bench.calibration_sweep(
+                freqs,
+                geophone_count=count,
+                geophone_rate=rate,
+                on_point=lambda res: self.after(0, self._on_sweep_point, res),
+            )
 
-        def _on_done(_):
+        def _on_done(results):
             self._set_busy(False)
-            self._set_status("Balayage termine")
+            n_ok = sum(1 for r in results if not r.get("skipped"))
+            self._set_status(f"Calibration terminée — {n_ok}/{len(results)} points")
 
-        WorkerThread(self, _worker, _on_done, self._on_error).start()
+        def _on_err(exc):
+            self._set_busy(False)
+            if isinstance(exc, TestBenchAborted):
+                self._set_status("Calibration interrompue (sécurité)")
+                messagebox.showwarning("Calibration", str(exc))
+            else:
+                self._on_error(exc)
 
-    def _on_sweep_point(self, freq, adc_data, accel_data, step):
-        self._sweep_results[freq] = {"adc": adc_data, "accel": accel_data}
-        self._progress.configure(value=step)
-        # Mettre a jour le graphique balayage
-        freqs_done = sorted(self._sweep_results.keys())
-        adc_peaks = [max(abs(v) for v in self._sweep_results[f]["adc"])
-                     for f in freqs_done]
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
+    def _on_sweep_point(self, res: dict):
+        freq = res["freq_hz"]
+        self._sweep_results[freq] = res
+        self._progress.configure(value=len(self._sweep_results))
+
+        if res.get("skipped"):
+            self._set_status(f"{freq} Hz ignoré — {res.get('note', '')}")
+        else:
+            self._set_status(
+                f"{freq} Hz : {res['measured_g']:.4g} g, "
+                f"STF {res['stiffness']}, dépl. {res['displacement_mm']:.2f} mm, "
+                f"marge {res['safety_margin_mm']:.1f} mm")
+
+        # Graphe sensibilité géophone (counts/g) vs fréquence
+        freqs_done = sorted(f for f in self._sweep_results
+                            if self._sweep_results[f].get("sensitivity_counts_per_g"))
         self._ax_sweep.clear()
-        self._ax_sweep.set_title("Reponse frequentielle")
+        self._ax_sweep.set_title("Sensibilite geophone vs frequence")
         self._ax_sweep.set_xlabel("Frequence (Hz)")
-        self._ax_sweep.set_ylabel("Amplitude crete ADC")
+        self._ax_sweep.set_ylabel("Sensibilite (counts/g)")
         self._ax_sweep.set_xscale("log")
         self._ax_sweep.grid(True, which="both", linestyle="--", alpha=0.5)
-        self._ax_sweep.plot(freqs_done, adc_peaks, "o-", color="tab:blue",
-                            label="ADC")
-        # Si on a des donnees accelerometre
-        if any(self._sweep_results[f]["accel"] is not None
-               for f in freqs_done):
-            accel_peaks = []
-            for f in freqs_done:
-                a = self._sweep_results[f]["accel"]
-                accel_peaks.append(float(np.max(np.abs(a))) if a is not None
-                                   else 0)
-            ax2 = self._ax_sweep.twinx()
-            ax2.plot(freqs_done, accel_peaks, "s--", color="tab:orange",
-                     label="Accel (V)")
-            ax2.set_ylabel("Amplitude accel. (V)")
-            ax2.legend(loc="upper left")
-        self._ax_sweep.legend(loc="upper right")
+        if freqs_done:
+            sens = [self._sweep_results[f]["sensitivity_counts_per_g"]
+                    for f in freqs_done]
+            self._ax_sweep.plot(freqs_done, sens, "o-", color="tab:blue")
+        self._fig_sweep.tight_layout()
         self._canvas_sweep.draw_idle()
+
+    def _center_zero(self):
+        """Lance le centrage ZER statique du contrôleur APS de l'axe actif."""
+        axis = self._vars["aps_axis"].get()
+        try:
+            bench = self._dm.make_testbench(axis)
+        except RuntimeError as e:
+            messagebox.showwarning("Centrage ZER", str(e))
+            return
+        bench.set_logger(lambda m: self.after(0, self._set_status, m))
+        self._set_busy(True)
+
+        def _worker():
+            return bench.center_zero()
+
+        def _on_done(zer):
+            self._set_busy(False)
+            self._set_status(f"Centrage ZER terminé (ZER={zer})")
+
+        WorkerThread(self, _worker, _on_done, self._on_error).start()
 
     def _do_stop(self):
         self._stop_event.set()
@@ -1112,26 +1190,30 @@ class Application(tk.Tk):
 
         self._set_status(f"Sauvegarde : {os.path.basename(path)}")
 
+    # Colonnes du sweep de calibration (schéma TestBench.calibration_sweep)
+    _SWEEP_COLUMNS = [
+        "freq_hz", "target_g", "measured_g", "vpp", "stiffness",
+        "displacement_mm", "safety_margin_mm",
+        "geophone_counts_peak", "sensitivity_counts_per_g",
+        "skipped", "note",
+    ]
+
     def _save_csv(self, path):
         rate = self._last_rate
         if self._sweep_results:
-            # Sauvegarde du balayage en CSV
+            # Sauvegarde de la calibration en CSV
             with open(path, "w", encoding="utf-8") as f:
-                f.write("freq_hz,adc_peak")
-                has_accel = any(v["accel"] is not None
-                                for v in self._sweep_results.values())
-                if has_accel:
-                    f.write(",accel_peak_v")
-                f.write("\n")
+                f.write(",".join(self._SWEEP_COLUMNS) + "\n")
                 for freq in sorted(self._sweep_results.keys()):
                     d = self._sweep_results[freq]
-                    peak = max(abs(v) for v in d["adc"])
-                    f.write(f"{freq},{peak}")
-                    if has_accel and d["accel"] is not None:
-                        f.write(f",{float(np.max(np.abs(d['accel']))):.6f}")
-                    elif has_accel:
-                        f.write(",")
-                    f.write("\n")
+                    row = []
+                    for col in self._SWEEP_COLUMNS:
+                        val = d.get(col, "")
+                        if isinstance(val, float):
+                            row.append(f"{val:.6g}")
+                        else:
+                            row.append(str(val))
+                    f.write(",".join(row) + "\n")
         elif self._last_adc is not None:
             with open(path, "w", encoding="utf-8") as f:
                 f.write("index,time_s,value\n")
@@ -1146,12 +1228,13 @@ class Application(tk.Tk):
         if self._last_accel is not None:
             save_dict["accel"] = self._last_accel
         if self._sweep_results:
-            for freq in sorted(self._sweep_results.keys()):
-                d = self._sweep_results[freq]
-                key = f"f{freq:.1f}Hz"
-                save_dict[f"{key}_adc"] = np.array(d["adc"], dtype=np.int32)
-                if d["accel"] is not None:
-                    save_dict[f"{key}_accel"] = d["accel"]
+            freqs_done = sorted(self._sweep_results.keys())
+            for col in self._SWEEP_COLUMNS:
+                if col in ("note",):
+                    continue
+                save_dict[f"sweep_{col}"] = np.array(
+                    [self._sweep_results[fr].get(col, 0) for fr in freqs_done],
+                    dtype=np.float64 if col != "skipped" else np.bool_)
         np.savez(path, **save_dict)
 
     # ===================================================================
@@ -1175,6 +1258,8 @@ class Application(tk.Tk):
         sv("NI",  "ai_channels",         self._vars["accel_ch"].get())
         sv("NI",  "sample_rate",         self._vars["accel_rate"].get())
         sv("NI",  "samples_per_channel", self._vars["accel_spc"].get())
+        sv("Shaker", "envelope_fraction", self._vars["cal_fraction"].get())
+        sv("Shaker", "accel_cap_g",       self._vars["cal_cap"].get())
         _cfg_mgr.save()
 
     def _on_close(self):
