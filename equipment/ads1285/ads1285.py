@@ -31,7 +31,7 @@ from config.settings import (
 if getattr(sys, "frozen", False):
     _PROJECT_ROOT = os.path.dirname(sys.executable)
 else:
-    _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _BRIDGE_SCRIPT   = os.path.join(_PROJECT_ROOT, "bridge", "bridge32.py")
 _BRIDGE_EXE      = os.path.join(_PROJECT_ROOT, "bridge32.exe")
@@ -78,13 +78,16 @@ class ADS1285:
             raise RuntimeError(f"Fichiers d'init manquants : {', '.join(missing)}")
 
         # On envoie uniquement les chemins — bridge32 lit les fichiers lui-meme
+        # timeout=120s : PHILoadFPGA + Close + ReInit peut prendre ~30s au total
         print("ADS1285: initialisation complete (FPGA + PSM)...")
         self._call("initialize_full", [
             os.path.abspath(_FPGA_BIN),
             [os.path.abspath(p) for p in _PSM_BINS],
             os.path.abspath(ADS1285_REGISTER_MAP),
             os.path.abspath(_CALL_LOG_JSON),
-        ])
+        ], timeout=120.0)
+        # Remettre un timeout raisonnable apres init (qui l'avait pousse a 120s)
+        self._sock.settimeout(30.0)
 
         print("ADS1285 connecté.")
 
@@ -169,6 +172,20 @@ class ADS1285:
             samples.append(word)
 
         return samples[:num_samples]
+
+    def read_raw_adc(self, selector: int = 0) -> int:
+        """
+        Lecture single-shot rapide via PHI_ReadARM_ADC_Data (sans PSM).
+        Utile pour vérifier la santé de la carte après connexion.
+
+        Args:
+            selector: 0..3 — sélecteur de canal ADC.
+
+        Returns:
+            Valeur entière 32-bit signée (≈ 1868 quand l'entrée est à la masse).
+        """
+        resp = self._call("read_arm_adc_data", [selector])
+        return resp["value"]
 
     def check_devices(self) -> int:
         """Retourne le nombre d'EVM détectés."""

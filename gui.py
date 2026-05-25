@@ -310,7 +310,13 @@ class Application(tk.Tk):
         bf.pack(fill="x", padx=5, pady=(0, 5))
         self._btn_ads_connect = ttk.Button(bf, text="Connecter",
                                             command=self._toggle_ads1285)
-        self._btn_ads_connect.pack(side="left")
+        self._btn_ads_connect.pack(side="left", padx=(0, 5))
+        self._btn_ads_test = ttk.Button(bf, text="Tester ADC",
+                                         command=self._test_ads1285_adc,
+                                         state="disabled")
+        self._btn_ads_test.pack(side="left")
+        self._lbl_ads_adc = ttk.Label(bf, text="", width=14)
+        self._lbl_ads_adc.pack(side="left", padx=(4, 0))
 
     # --- Wavetek ---
 
@@ -605,11 +611,24 @@ class Application(tk.Tk):
             port = int(self._vars["ads_port"].get())
             rate = int(self._vars["ads_rate"].get())
             count = int(self._vars["ads_count"].get())
-            self._set_status("Connexion ADS1285...")
+            self._set_status("Connexion ADS1285 — init FPGA/PSM (~15 s)...")
             self._set_busy(True)
+            self._progress.configure(mode="indeterminate")
+            self._progress.start(20)
+
+            def _on_connected(_):
+                self._progress.stop()
+                self._progress.configure(mode="determinate", value=0)
+                self._on_device_toggled("ads1285", True)
+
+            def _on_conn_err(exc):
+                self._progress.stop()
+                self._progress.configure(mode="determinate", value=0)
+                self._on_error(exc)
+
             WorkerThread(self, self._dm.connect_ads1285,
-                         lambda _: self._on_device_toggled("ads1285", True),
-                         self._on_error, port, rate, count).start()
+                         _on_connected, _on_conn_err,
+                         port, rate, count).start()
 
     def _toggle_wavetek(self):
         if self._dm.connected["wavetek"]:
@@ -670,6 +689,10 @@ class Application(tk.Tk):
         if key == "ads1285":
             self._btn_ads_connect.configure(
                 text="Deconnecter" if connected else "Connecter")
+            self._btn_ads_test.configure(
+                state="normal" if connected else "disabled")
+            if not connected:
+                self._lbl_ads_adc.configure(text="")
 
         elif key == "wavetek":
             self._btn_wav_connect.configure(
@@ -698,6 +721,30 @@ class Application(tk.Tk):
         self._set_busy(False)
         self._set_status("Erreur")
         messagebox.showerror("Erreur", str(exc))
+
+    # --- Test ADC single-shot ---
+
+    def _test_ads1285_adc(self):
+        """Lit un seul echantillon ADC via read_raw_adc (sans PSM, rapide)."""
+        dev = self._dm.instances.get("ads1285")
+        if not dev:
+            return
+        self._set_status("Lecture ADC single-shot...")
+        self._btn_ads_test.configure(state="disabled")
+
+        def _worker():
+            return dev.read_raw_adc(0)
+
+        def _on_done(value):
+            self._btn_ads_test.configure(state="normal")
+            self._lbl_ads_adc.configure(text=f"ADC={value}")
+            self._set_status(f"ADC single-shot : {value}")
+
+        def _on_err(exc):
+            self._btn_ads_test.configure(state="normal")
+            self._on_error(exc)
+
+        WorkerThread(self, _worker, _on_done, _on_err).start()
 
     # --- Connecter tout ---
 
