@@ -103,6 +103,13 @@ class PHIInterface:
         d.PHI_StartFiniteCapture.restype  = ctypes.c_int32
         d.PHI_StartFiniteCapture.argtypes = [ctypes.c_int32, ctypes.c_int32]
 
+        # int PHI_ReadARM_ADC_Data(int handle, int selector, int* pValue)
+        # Confirme par desassemblage : ecrit selector (byte) au registre 0x4c,
+        # PHI_Process(0x4c), lit 4 octets du reg 0x4c et les assemble en int32
+        # big-endian dans *pValue. Lecture single-shot, sans PHI_GetEvents.
+        d.PHI_ReadARM_ADC_Data.restype  = ctypes.c_int32
+        d.PHI_ReadARM_ADC_Data.argtypes = [ctypes.c_int32, ctypes.c_int32, P]
+
         # int PHI_Enable_PipeOut(int handle, int endpointAddr, int enable)
         d.PHI_Enable_PipeOut.restype  = ctypes.c_int32
         d.PHI_Enable_PipeOut.argtypes = [ctypes.c_int32, ctypes.c_int32, ctypes.c_int32]
@@ -130,9 +137,11 @@ class PHIInterface:
         d.PHI_Process.restype  = ctypes.c_int32
         d.PHI_Process.argtypes = [ctypes.c_int32, ctypes.c_int32, P]
 
-        # int PHILoadFPGAByMappingFile(int handle, char* xmlPath)
+        # int PHILoadFPGAByMappingFile(int handle, char* xmlPath, int arg3)
+        # arg3=10 confirme par call_log[437]: args=[handle, xml_ptr, 10, ...]
         d.PHILoadFPGAByMappingFile.restype  = ctypes.c_int32
-        d.PHILoadFPGAByMappingFile.argtypes = [ctypes.c_int32, ctypes.c_char_p]
+        d.PHILoadFPGAByMappingFile.argtypes = [ctypes.c_int32, ctypes.c_char_p,
+                                               ctypes.c_int32]
 
         # int PHI_SetWireIn(int handle, int ep, int value, int mask)
         d.PHI_SetWireIn.restype  = ctypes.c_int32
@@ -149,9 +158,12 @@ class PHIInterface:
         d.PHI_ReadWireIn.restype  = ctypes.c_int32
         d.PHI_ReadWireIn.argtypes = [ctypes.c_int32, ctypes.c_int32, P]
 
-        # int PHI_Play_PipeIn(int handle, int ep, int unk, ...)
+        # int PHI_Play_PipeIn(int handle, int ep, int unk, int flag)
+        # 4 args confirme par call_log[511]: args[1:4]=[0, 0, 1] → ep=0, unk=0, flag=1
+        # IMPORTANT: stdcall — passer exactement 4 args sinon corruption de pile
         d.PHI_Play_PipeIn.restype  = ctypes.c_int32
-        d.PHI_Play_PipeIn.argtypes = [ctypes.c_int32, ctypes.c_int32, ctypes.c_int32]
+        d.PHI_Play_PipeIn.argtypes = [ctypes.c_int32, ctypes.c_int32,
+                                      ctypes.c_int32, ctypes.c_int32]
 
         # int PHI_ClosePSM(int handle, int psm_id)
         d.PHI_ClosePSM.restype  = ctypes.c_int32
@@ -264,9 +276,43 @@ class PHIInterface:
         ret = self._dll.PHI_Process(self._handle, cmd, ctypes.byref(result))
         return {"ret": ret, "result": result.value}
 
-    def load_fpga_by_mapping_file(self, xml_path) -> int:
+    def _initialize_with_retry(self, timeout=30.0) -> int:
+        """
+        Tente PHI_Initialize(0) avec retries jusqu'a `timeout` secondes.
+        Ferme le handle invalide entre les essais et attend le device USB.
+        Retourne le code de retour du dernier essai.
+        """
+        import time
+        t_deadline = time.time() + timeout
+        attempt = 0
+        ret = -1
+        while time.time() < t_deadline:
+            attempt += 1
+            ret = self.initialize(0)
+            _log(f"    _init_retry essai {attempt}: ret={ret}  handle={self._handle.value}")
+            if ret == 0:
+                break
+            # Fermer le handle invalide
+            if self._handle.value != 0:
+                self._dll.PHI_Close(self._handle)
+                self._handle = ctypes.c_int32(0)
+            # Attendre que le device soit accessible (poll + pause)
+            import time as _t
+            count = ctypes.c_int32(0)
+            t_poll = _t.time() + 3.0
+            while _t.time() < t_poll:
+                self._dll.PHI_CheckforDevices(ctypes.byref(count))
+                if count.value > 0:
+                    break
+                _t.sleep(0.2)
+            _t.sleep(1.0)  # stabilisation supplementaire avant prochain essai
+        _log(f"    _init_retry: {attempt} essai(s), ret final={ret}  "
+             f"handle={self._handle.value}")
+        return ret
+
+    def load_fpga_by_mapping_file(self, xml_path, arg3=10) -> int:
         return self._dll.PHILoadFPGAByMappingFile(
-            self._handle, xml_path.encode("mbcs")
+            self._handle, xml_path.encode("mbcs"), ctypes.c_int32(arg3)
         )
 
     def set_wire_in(self, ep, value, mask=0xFFFFFFFF) -> int:
@@ -276,8 +322,10 @@ class PHIInterface:
         """PHI_UpdateWireIn est un combo SetWire+Update (4 args dans TI PHI)."""
         return self._dll.PHI_UpdateWireIn(self._handle, ep, value, mask)
 
-    def play_pipe_in(self, ep=0) -> int:
-        return self._dll.PHI_Play_PipeIn(self._handle, ep, 0)
+    def play_pipe_in(self, ep=0, unk=0, flag=1) -> int:
+        # flag=1 confirme par call_log[511]: args[1:4]=[ep=0, unk=0, flag=1]
+        return self._dll.PHI_Play_PipeIn(self._handle, ep,
+                                         ctypes.c_int32(unk), ctypes.c_int32(flag))
 
     def close_psm(self, psm_id: int = 0) -> int:
         return self._dll.PHI_ClosePSM(self._handle, ctypes.c_int32(psm_id))
@@ -412,10 +460,22 @@ class PHIInterface:
         self.update_wire_in(20, 2, 0xFFFF)
         self.run_psm(0, num_samples)
 
-        # 7. Attendre la fin de l'acquisition
+        # 7. Attendre la fin de l'acquisition en pollant le compteur d'octets
+        #    disponibles : registre (channel 1, offset 4108). Confirme par
+        #    spy_getevents.py : passe de 0 a n_bytes quand les donnees sont pretes.
         wait_s = num_samples / float(sample_rate) + 0.5
-        _log(f"  acquire: attente {wait_s:.2f}s pour {num_samples} echantillons @ {sample_rate} SPS")
-        time.sleep(wait_s)
+        deadline = time.time() + wait_s + 5.0
+        avail = 0
+        polls = 0
+        while time.time() < deadline:
+            buf4 = ctypes.create_string_buffer(4)
+            self._dll.PHI_Read(self._handle, 1, 4108, 4, buf4)
+            avail = int.from_bytes(buf4.raw, "little")
+            polls += 1
+            if avail >= n_bytes:
+                break
+            time.sleep(0.02)
+        _log(f"  acquire: poll reg4108 -> {avail} octets dispo (cible {n_bytes}, {polls} lectures)")
 
         # 8. Trigger lecture et lire les donnees
         self.phi_write(1, 56,   [0, 0, 0, 0])
@@ -429,7 +489,8 @@ class PHIInterface:
         except OSError as e:
             _log(f"  acquire: PHI_ClosePSM echoue (attendu): {e}")
 
-        _log(f"  acquire: {len(result['data'])} octets lus (rc={result['ret']})")
+        nz = sum(1 for b in result["data"] if b != 0)
+        _log(f"  acquire: {len(result['data'])} octets lus (rc={result['ret']}), non_zero={nz}")
         return result
 
     def abort_psm(self) -> int:
@@ -496,16 +557,28 @@ class PHIInterface:
                 continue
 
             if fn == "PHI_Close":
-                ret = self._dll.PHI_Close(self._handle)
-                _log(f"  PHI_Close -> {ret}")
-                # Le handle reste le meme objet — PHI_Initialize le remplira.
+                # PHI_Close [17] est le premier appel du cycle reset ARM.
+                # Dans la GUI TI ce Close met le handle en etat "ferme" et
+                # PHI_ARMReset fonctionne (ret=0). Pour un handle fresh (cold-start)
+                # ce Close donne FE-9 sur ARMReset.
+                # STRATEGY ALTERNATIVE : on saute ce Close et on garde le handle
+                # OUVERT pour PHI_ARMReset. Avec le handle ouvert, ARMReset retourne
+                # USB-5 MAIS le hardware ARM se remet physiquement a zero (bootloader).
+                # On fera le Close + Re-Initialize APRES ARMReset pour rafraichir
+                # la connexion USB stale (voir handler PHI_ARMReset ci-dessous).
+                _log(f"  PHI_Close SAUTE (strategie: ARMReset avec handle ouvert + "
+                     f"Close/ReInit post-reset)")
                 continue
 
             if fn == "PHI_Initialize":
-                ret = self.initialize(0)
-                handle_valid = (self._handle.value != 0)
+                # Retry avec close/wait: le device peut etre en cours de boot
+                # ou la connexion USB stale (USB-13) apres un test precedent.
+                ret = self._initialize_with_retry(timeout=30.0)
+                # handle valide SEULEMENT si retour = 0 ET handle non nul
+                handle_valid = (ret == 0 and self._handle.value != 0)
                 results[f"initialize_{idx}"] = ret
-                _log(f"  PHI_Initialize -> {ret}  handle={self._handle.value}")
+                _log(f"  PHI_Initialize -> {ret}  handle={self._handle.value}  "
+                     f"valid={handle_valid}")
                 continue
 
             # --- Ignorer tout ce qui suit si le handle n'est pas encore valide ---
@@ -526,9 +599,11 @@ class PHIInterface:
                         ret = self.phi_write(6, addr, chunk)
                         fpga_chunks += 1
                         if fpga_chunks == 1:
-                            _log(f"  FPGA: chargement de {len(fpga_data)}B en cours...")
-                        if fpga_chunks % 100 == 0:
-                            _log(f"  FPGA: {fpga_chunks} blocs")
+                            _log(f"  FPGA: chargement de {len(fpga_data)}B en cours... (ret premier bloc={ret})")
+                        elif fpga_chunks % 100 == 0:
+                            _log(f"  FPGA: {fpga_chunks} blocs (ret={ret})")
+                        if ret != 0 and fpga_chunks <= 3:
+                            _log(f"  FPGA: ERREUR bloc {fpga_chunks} addr={addr} ret={ret}")
                 elif buf:
                     ret = self.phi_write(ch, addr, buf)
                     if ret != 0:
@@ -540,22 +615,169 @@ class PHIInterface:
                     _log(f"  PHI_Process({a[1]}) -> ret={r['ret']} result={r['result']}")
 
             elif fn == "PHI_ARMReset":
-                # Le handle peut etre "ferme" a ce stade — la DLL TI le tolere.
+                # On appelle PHI_ARMReset avec le handle OUVERT (non ferme).
+                # Avec handle ouvert: ret=USB-5 — cela provoque un reset USB complet
+                # (ARM + FPGA/USB re-enumeration). Le device disparait et revient.
+                # Strategie: Close + polling CheckforDevices + Re-Initialize quand
+                # le device USB est revenu (avec timeout 30s).
                 ret = self._dll.PHI_ARMReset(self._handle)
-                _log(f"  PHI_ARMReset -> {ret}")
-                import time; time.sleep(0.5)  # laisser le firmware ARM rebooter
+                _log(f"  PHI_ARMReset (handle ouvert) -> {ret}")
+                import time
+                time.sleep(0.5)  # laisser le reset USB se propager
+                # Fermer le handle stale
+                ret_close = self._dll.PHI_Close(self._handle)
+                _log(f"  PHI_Close post-ARMReset -> {ret_close}")
+                self._handle = ctypes.c_int32(0)
+                # Attendre la re-enumeration USB (jusqu'a 30s)
+                count = ctypes.c_int32(0)
+                deadline = time.time() + 30.0
+                while time.time() < deadline:
+                    time.sleep(0.5)
+                    self._dll.PHI_CheckforDevices(ctypes.byref(count))
+                    if count.value > 0:
+                        _log(f"  Device USB revenu apres {30.0-(deadline-time.time()):.1f}s")
+                        break
+                else:
+                    _log("  TIMEOUT: device USB pas revenu apres 30s")
+                # Re-Initialiser avec le device maintenant present (avec retries)
+                time.sleep(0.5)  # stabilisation initiale
+                ret2 = self._initialize_with_retry(timeout=30.0)
+                _log(f"  Re-PHI_Initialize post-ARMReset -> {ret2}  "
+                     f"handle={self._handle.value}")
+                handle_valid = (ret2 == 0 and self._handle.value != 0)
 
             elif fn == "PHI_ARM_Firmware_Load":
-                # args[0]=0 = device_index (PAS le handle) d'apres le call_log
+                # args[0]=0 = device_index (PAS le handle) d'apres le call_log.
+                # Apres cet appel, l'ARM reboot avec le nouveau firmware.
+                # FE-13 ("Communication lost") est ATTENDU : l'ARM reboote et
+                # le USB peut re-enumerer. Il faut attendre le retour du device
+                # avant la prochaine PHI_Initialize (call_log index [419]).
+                # On NE re-initialise PAS ici — on laisse la replay le faire
+                # quand elle arrive a [419] (PHI_Initialize dans le call_log).
                 device_idx = ctypes.c_int32(a[0])
                 ret = self._dll.PHI_ARM_Firmware_Load(device_idx)
                 _log(f"  PHI_ARM_Firmware_Load(device={a[0]}) -> {ret}")
-                import time; time.sleep(0.5)  # laisser le firmware charger
+                import time
+                time.sleep(0.5)
+                # Fermer le handle stale (ARM reboote avec nouveau firmware)
+                ret_close = self._dll.PHI_Close(self._handle)
+                _log(f"  PHI_Close post-FirmwareLoad -> {ret_close}")
+                self._handle = ctypes.c_int32(0)
+                handle_valid = False  # invalidate handle — [419] PHI_Initialize le recreera
+                # Attendre la re-enumeration USB apres ARM reboot (jusqu'a 30s)
+                count = ctypes.c_int32(0)
+                deadline = time.time() + 30.0
+                while time.time() < deadline:
+                    time.sleep(0.5)
+                    self._dll.PHI_CheckforDevices(ctypes.byref(count))
+                    if count.value > 0:
+                        elapsed = 30.0 - (deadline - time.time())
+                        _log(f"  Device USB revenu apres ARM reboot ({elapsed:.1f}s)")
+                        break
+                else:
+                    _log("  TIMEOUT: device pas revenu apres PHI_ARM_Firmware_Load (30s)")
+                # [419] PHI_Initialize dans le call_log aura aussi un retry loop
+                # via le handler PHI_Initialize ci-dessus. Pas besoin de re-init ici.
+
+            elif fn == "PHILoadFPGA":
+                # PHILoadFPGA(handle, buf_ptr, size=464307)
+                #
+                # Toujours appeler PHILoadFPGA pour charger PHI_generic.bit.
+                # Raison : le FPGA charge son flash d'usine (bitfile ancien) apres
+                # une reconnexion USB.  Sans le bon bitfile, PHI_UpdateWireIn
+                # retourne 8192 au lieu de 0 et les commandes ADC echouent.
+                #
+                # ATTENTION : si le FPGA tourne deja (handle_valid), PHILoadFPGA
+                # reprogramme le FPGA → reset de l'interface OpalKelly USB → USB-13
+                # sur les ops ARM suivantes.  Apres chargement, on teste si l'ARM
+                # repond encore.  Si non → Close + attente + ReInit.
+                #
+                # Chercher le bitfile dans l'ordre de priorite :
+                #   1. Bitfile capture par spy_getevents2.py (tools/getevents_buffers/)
+                #   2. Bitfile installe par la GUI TI (ProgramData)
+                import glob as _glob
+                _prog_data_bit = (
+                    r"C:\ProgramData\Texas Instruments\ADS1285\Bit Files\PHI_generic.bit"
+                )
+                fpga_bitfile_candidates = _glob.glob(
+                    os.path.join(os.path.dirname(os.path.dirname(fpga_bin_path)),
+                                 "tools", "getevents_buffers", "fpga_bitfile_*.bin")
+                )
+                # Priorite : capture spy > ProgramData
+                fpga_bit_path = None
+                if fpga_bitfile_candidates:
+                    fpga_bit_path = sorted(fpga_bitfile_candidates)[-1]
+                elif os.path.isfile(_prog_data_bit):
+                    fpga_bit_path = _prog_data_bit
+
+                if fpga_bit_path:
+                    with open(fpga_bit_path, "rb") as _fh:
+                        fpga_bit_data = _fh.read()
+                    _log(f"  PHILoadFPGA: bitfile {fpga_bit_path} ({len(fpga_bit_data)}B)")
+                    # int PHILoadFPGA(int handle, unsigned char* buf, int size)
+                    _buf = ctypes.create_string_buffer(fpga_bit_data, len(fpga_bit_data))
+                    try:
+                        self._dll.PHILoadFPGA.restype  = ctypes.c_int32
+                        self._dll.PHILoadFPGA.argtypes = [
+                            ctypes.c_int32, ctypes.c_char_p, ctypes.c_int32
+                        ]
+                        ret = self._dll.PHILoadFPGA(self._handle, _buf,
+                                                     ctypes.c_int32(len(fpga_bit_data)))
+                        results["fpga_load"] = ret
+                        _log(f"  PHILoadFPGA({len(fpga_bit_data)}B) -> {ret}")
+
+                        if ret == 0:
+                            # Tester immediatement si l'ARM repond (ch=1, addr=514).
+                            # Si USB reset a eu lieu (FPGA deja charge), ret_test=13.
+                            # Si FPGA etait vide (premiere prog), ret_test=0.
+                            import time as _ti
+                            _arm_test_buf = ctypes.create_string_buffer(4)
+                            self._dll.PHI_Read.restype  = ctypes.c_int32
+                            self._dll.PHI_Read.argtypes = [ctypes.c_int32,
+                                ctypes.c_int32, ctypes.c_int32, ctypes.c_int32,
+                                ctypes.c_char_p]
+                            ret_test = self._dll.PHI_Read(self._handle,
+                                ctypes.c_int32(1), ctypes.c_int32(514),
+                                ctypes.c_int32(1), _arm_test_buf)
+                            _log(f"  PHILoadFPGA: test ARM (read ch=1 addr=514) -> {ret_test}")
+                            if ret_test != 0:
+                                # USB reset detecte — Close + attente + ReInit
+                                _log("  PHILoadFPGA: USB reset detecte — Close+ReInit...")
+                                _ti.sleep(2.0)   # laisser le FPGA demarrer
+                                try:
+                                    self._dll.PHI_Close(self._handle)
+                                except Exception:
+                                    pass
+                                self._handle = ctypes.c_int32(0)
+                                _ti.sleep(2.0)   # stabilisation USB
+                                ret2 = self._initialize_with_retry(timeout=30.0)
+                                _log(f"  ReInit post-PHILoadFPGA -> ret={ret2} "
+                                     f"handle={self._handle.value}")
+                                if ret2 != 0:
+                                    _log("  AVERTISSEMENT: ReInit post-PHILoadFPGA"
+                                         f" echoue (ret={ret2}) — USB-13 probable")
+                            else:
+                                _log("  PHILoadFPGA: ARM repond — pas de Close+ReInit")
+                    except Exception as _e:
+                        _log(f"  PHILoadFPGA: exception {_e}")
+                else:
+                    _log(f"  PHILoadFPGA SAUTE: bitfile FPGA non trouve. "
+                         f"Capturer avec tools/spy_getevents2.py.")
 
             elif fn == "PHILoadFPGAByMappingFile":
-                ret = self.load_fpga_by_mapping_file(xml_map_path)
+                # "PHILoadFPGAByMappingFile" attend le Mapping.ini (ProgramData).
+                # Mapping.ini: [ads1285evm] FirmwareFileName = PHI_generic.bit
+                # → la DLL lit le device name, charge PHI_generic.bit depuis le meme
+                #   repertoire, configure le FPGA.
+                _mapping_ini = (
+                    r"C:\ProgramData\Texas Instruments\ADS1285\Bit Files\Mapping.ini"
+                )
+                arg3 = a[2] if len(a) > 2 else 10
+                # Utiliser Mapping.ini en priorite, fallback sur xml_map_path
+                _map_path = _mapping_ini if os.path.isfile(_mapping_ini) else xml_map_path
+                ret = self.load_fpga_by_mapping_file(_map_path, arg3)
                 results["fpga_mapping"] = ret
-                _log(f"  PHILoadFPGAByMappingFile -> {ret}")
+                _log(f"  PHILoadFPGAByMappingFile(path={_map_path!r}, arg3={arg3}) -> {ret}")
 
             elif fn == "PHI_UpdateWireIn":
                 ret = self.update_wire_in(a[1], a[2], a[3])
@@ -636,6 +858,33 @@ class PHIInterface:
     def start_finite_capture(self, num_samples) -> int:
         return self._dll.PHI_StartFiniteCapture(self._handle, num_samples)
 
+    def read_arm_adc_data(self, selector=0) -> dict:
+        """Lit un echantillon ADC 32-bit via PHI_ReadARM_ADC_Data (single-shot)."""
+        val = ctypes.c_int32(0)
+        ret = self._dll.PHI_ReadARM_ADC_Data(self._handle, selector, ctypes.byref(val))
+        return {"ret": ret, "value": val.value}
+
+    def acquire_arm(self, num_samples, selector=0, delay_us=0) -> dict:
+        """Boucle de lecture single-shot cote bridge (rapide, sans aller-retour socket).
+
+        Retourne {"ret": <dernier rc>, "data": [int32, ...]}.
+        delay_us : pause optionnelle entre lectures (microsecondes).
+        """
+        import time
+        samples = []
+        val = ctypes.c_int32(0)
+        last_ret = 0
+        for _ in range(num_samples):
+            last_ret = self._dll.PHI_ReadARM_ADC_Data(self._handle, selector,
+                                                      ctypes.byref(val))
+            samples.append(val.value)
+            if delay_us:
+                time.sleep(delay_us / 1_000_000.0)
+        nz = sum(1 for s in samples if s != 0)
+        _log(f"  acquire_arm: {len(samples)} samples (sel={selector}), non_zero={nz}, "
+             f"min={min(samples) if samples else 0}, max={max(samples) if samples else 0}")
+        return {"ret": last_ret, "data": samples}
+
     def enable_pipe_out(self, endpoint, enable=1) -> int:
         return self._dll.PHI_Enable_PipeOut(self._handle, endpoint, enable)
 
@@ -676,6 +925,8 @@ class PHIInterface:
                                            args[0], args[1], args[2],
                                            args[3] if len(args) > 3 else None),
             "start_finite_capture":    lambda: self.start_finite_capture(*args, **kwargs),
+            "read_arm_adc_data":       lambda: self.read_arm_adc_data(*args, **kwargs),
+            "acquire_arm":             lambda: self.acquire_arm(*args, **kwargs),
             "enable_pipe_out":         lambda: self.enable_pipe_out(*args, **kwargs),
             "read_pipe_out":           lambda: self.read_pipe_out(*args, **kwargs),
             "acquire_samples":         lambda: self.acquire_samples(
@@ -721,6 +972,16 @@ def handle_client(conn, phi):
                 conn.sendall((json.dumps(resp) + "\n").encode())
     except _Shutdown:
         _log("Shutdown demande par le client.")
+        # Fermer proprement la connexion USB avant de quitter.
+        # os._exit() bypasse les destructeurs — sans ce close, la prochaine
+        # instance du bridge trouve le device USB en etat 'deja ouvert' -> USB-13.
+        try:
+            if phi._handle.value != 0:
+                ret_c = phi._dll.PHI_Close(phi._handle)
+                phi._handle = ctypes.c_int32(0)
+                _log(f"  PHI_Close on shutdown -> {ret_c}")
+        except Exception as _exc:
+            _log(f"  PHI_Close on shutdown ERREUR: {_exc}")
         os._exit(0)
     finally:
         conn.close()
