@@ -161,17 +161,50 @@ class ADS1285:
             os.path.abspath(psm_seq),
             sample_rate,
         ], timeout=acq_timeout)
+        import struct
         raw: list[int] = resp["data"]
 
-        # Convertir les octets bruts en entiers 32-bit signés (big-endian)
-        samples = []
-        for i in range(0, len(raw) - 3, 4):
-            word = (raw[i] << 24) | (raw[i+1] << 16) | (raw[i+2] << 8) | raw[i+3]
-            if word >= 0x80000000:
-                word -= 0x100000000
-            samples.append(word)
+        # Convertir les octets bruts en entiers 32-bit signés little-endian.
+        # Le PSM/FPGA écrit en little-endian (natif x86/OpalKelly) — confirmé
+        # par la cohérence avec l'interprétation little-endian de reg 4108 dans
+        # acquire_samples. PHI_ReadARM_ADC_Data assemble en big-endian côté DLL,
+        # mais le flux PSM sort en little-endian.
+        raw_bytes = bytes(raw)
+        n = len(raw_bytes) // 4
+        samples = list(struct.unpack_from(f"<{n}i", raw_bytes))
 
         return samples[:num_samples]
+
+    def acquire_arm(self,
+                    num_samples: int | None = None,
+                    sample_rate: int | None = None,
+                    selector: int = 0) -> list[int]:
+        """
+        Acquisition par boucle de lectures single-shot PHI_ReadARM_ADC_Data.
+
+        Alternative à acquire() sans PSM : plus lente (latence socket) mais
+        garantit qu'on lit le canal ADC actif. Utile pour diagnostiquer si
+        l'acquisition PSM est correcte. Le taux effectif est approché.
+
+        Args:
+            num_samples: Nombre d'échantillons. Défaut : ADS1285_NUM_SAMPLES.
+            sample_rate: Taux en Hz. Défaut : ADS1285_SAMPLE_RATE.
+            selector:    Sélecteur canal (0..3).
+
+        Returns:
+            Liste d'entiers 32-bit signés.
+        """
+        if num_samples is None:
+            num_samples = self._num_samples
+        if sample_rate is None:
+            sample_rate = self._sample_rate
+
+        delay_us = int(1_000_000 / sample_rate)
+        # timeout = durée totale + 5s marge
+        acq_timeout = num_samples / sample_rate + 5.0
+        resp = self._call("acquire_arm", [num_samples, selector, delay_us],
+                          timeout=acq_timeout)
+        return resp["data"]
 
     def read_raw_adc(self, selector: int = 0) -> int:
         """

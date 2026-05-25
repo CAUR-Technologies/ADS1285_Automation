@@ -416,6 +416,9 @@ class PHIInterface:
 
         Sequence capturee par spy_phi_dll.py (call_log idx 729-791).
         sample_rate : taux d'echantillonnage en Hz (4000, 2000, 1000, 500, 250).
+
+        IMPORTANT endianness : les octets retournes sont little-endian (natif FPGA/x86).
+        Interprete-les avec struct.unpack_from('<i', ...) ou int.from_bytes(..., 'little').
         """
         import time, struct
 
@@ -425,6 +428,13 @@ class PHIInterface:
             psm_seq = f.read()
 
         n_bytes = num_samples * 4  # 4 octets par echantillon
+
+        # 0. Selectionner le canal analogique (wire 5, valeur 0, masque 0x1F).
+        #    Confirme par call_log idx 721 : PHI_UpdateWireIn(5, 0, 31) avant chaque
+        #    acquisition dans le GUI TI. Sans cet appel, le mux est potentiellement
+        #    dans un etat indefini et on lit du bruit au lieu du signal capteur.
+        self.update_wire_in(5, 0, 0x1F)
+        _log("  acquire: UpdateWireIn(5, 0, 0x1F) — selection canal capteur")
 
         # 1. Initialiser le moteur PSM
         # Le repertoire psm0/ (au meme niveau que psm_acq_path) contient
@@ -483,7 +493,20 @@ class PHIInterface:
         self.phi_process(2060)
         result = self.phi_read(3, 9216, n_bytes)
 
-        # 9. Fermer le PSM (peut crasher si PHI_LoadPSM n'a pas ete appele)
+        # 9. Diagnostic endianness : logguer les 2 premiers echantillons
+        #    interpretes en big-endian et en little-endian pour comparer
+        #    avec la valeur de reference PHI_ReadARM_ADC_Data (~1868 au repos).
+        raw = result["data"]
+        if len(raw) >= 8:
+            be0 = struct.unpack_from(">i", bytes(raw[0:4]))[0]
+            le0 = struct.unpack_from("<i", bytes(raw[0:4]))[0]
+            be1 = struct.unpack_from(">i", bytes(raw[4:8]))[0]
+            le1 = struct.unpack_from("<i", bytes(raw[4:8]))[0]
+            _log(f"  acquire: ech[0] BE={be0:12d}  LE={le0:12d}")
+            _log(f"  acquire: ech[1] BE={be1:12d}  LE={le1:12d}")
+            _log(f"  acquire: bytes[0:8] = {raw[:8]}")
+
+        # 10. Fermer le PSM (peut crasher si PHI_LoadPSM n'a pas ete appele)
         try:
             self.close_psm(0)
         except OSError as e:

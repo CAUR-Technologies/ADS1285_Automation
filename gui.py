@@ -305,6 +305,8 @@ class Application(tk.Tk):
                   combo_values=["250", "500", "1000", "2000", "4000"])
         self._row(f, "Nb echantillons :", self._make_var("ads_count", ADS1285_NUM_SAMPLES), 2,
                   combo_values=["256", "512", "1024", "2048", "4096", "8192"])
+        self._row(f, "Mode acq. :", self._make_var("ads_acq_mode", "PSM"), 3,
+                  combo_values=["PSM", "ARM"])
 
         bf = ttk.Frame(lf)
         bf.pack(fill="x", padx=5, pady=(0, 5))
@@ -881,8 +883,14 @@ class Application(tk.Tk):
         self._progress.configure(mode="indeterminate")
         self._progress.start(20)
 
+        acq_mode = self._vars["ads_acq_mode"].get()
+
         def _worker():
-            adc_data = self._dm.instances["ads1285"].acquire(count, rate)
+            dev = self._dm.instances["ads1285"]
+            if acq_mode == "ARM":
+                adc_data = dev.acquire_arm(count, rate)
+            else:
+                adc_data = dev.acquire(count, rate)
             accel_data = None
             if self._dm.connected.get("accel") and self._dm.instances.get("accel"):
                 accel_data = self._dm.instances["accel"].acquire()
