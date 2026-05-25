@@ -41,6 +41,7 @@ ACCEL_SENSITIVITY_V_PER_G = float(get("Shaker", "accel_sensitivity_v_per_g"))
 SHAKER_SERVO_TOLERANCE    = float(get("Shaker", "servo_tolerance"))
 SHAKER_SERVO_MAX_ITER     = int(get("Shaker", "servo_max_iter"))
 SHAKER_SERVO_START_VPP    = float(get("Shaker", "servo_start_vpp"))
+SHAKER_GEOPHONE           = get("Shaker", "geophone")
 
 # --- Acquisition generale ---
 DATA_OUTPUT_DIR = get("General", "data_output_dir")

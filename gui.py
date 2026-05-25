@@ -30,7 +30,7 @@ from config.settings import (
     WAVETEK_PORT, WAVETEK_BAUD,
     APS_CONTROLLER_VERTICAL_PORT, APS_CONTROLLER_HORIZONTAL_PORT,
     NI_DEVICE_NAME, NI_AI_CHANNELS, NI_SAMPLE_RATE, NI_SAMPLES_PER_CHANNEL,
-    SHAKER_ENVELOPE_FRACTION, SHAKER_ACCEL_CAP_G,
+    SHAKER_ENVELOPE_FRACTION, SHAKER_ACCEL_CAP_G, SHAKER_GEOPHONE,
     DATA_OUTPUT_DIR,
 )
 from equipment.ads1285 import ADS1285
@@ -43,6 +43,19 @@ try:
 except ImportError:
     _HAS_NIDAQMX = False
     Accelerometer = None
+
+
+# Modeles de geophones candidats a la calibration
+GEOPHONE_MODELS = [
+    "HG-5VHS",
+    "HG-6 HB",
+    "HG-6XT UB",
+    "HG-2 U",
+    "VAS-200 (V)",
+    "VAS-H-200",
+    "ST-2A (V)",
+    "ST-2A (H)",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -318,10 +331,15 @@ class Application(tk.Tk):
         f.pack(fill="x", padx=5, pady=5)
         f.columnconfigure(1, weight=1)
 
+        _geo_default = SHAKER_GEOPHONE if SHAKER_GEOPHONE in GEOPHONE_MODELS \
+            else GEOPHONE_MODELS[0]
+        self._row(f, "Géophone :",
+                  self._make_var("cal_geophone", _geo_default), 0,
+                  combo_values=GEOPHONE_MODELS, width=14)
         self._row(f, "Fraction env. :",
-                  self._make_var("cal_fraction", SHAKER_ENVELOPE_FRACTION), 0)
+                  self._make_var("cal_fraction", SHAKER_ENVELOPE_FRACTION), 1)
         self._row(f, "Plafond (g) :",
-                  self._make_var("cal_cap", SHAKER_ACCEL_CAP_G), 1)
+                  self._make_var("cal_cap", SHAKER_ACCEL_CAP_G), 2)
 
         bf = ttk.Frame(lf)
         bf.pack(fill="x", padx=5, pady=(0, 5))
@@ -1052,7 +1070,8 @@ class Application(tk.Tk):
         freqs_done = sorted(f for f in self._sweep_results
                             if self._sweep_results[f].get("sensitivity_counts_per_g"))
         self._ax_sweep.clear()
-        self._ax_sweep.set_title("Sensibilite geophone vs frequence")
+        geophone = self._vars["cal_geophone"].get()
+        self._ax_sweep.set_title(f"Sensibilite geophone vs frequence — {geophone}")
         self._ax_sweep.set_xlabel("Frequence (Hz)")
         self._ax_sweep.set_ylabel("Sensibilite (counts/g)")
         self._ax_sweep.set_xscale("log")
@@ -1200,9 +1219,12 @@ class Application(tk.Tk):
 
     def _save_csv(self, path):
         rate = self._last_rate
+        geophone = self._vars["cal_geophone"].get()
         if self._sweep_results:
             # Sauvegarde de la calibration en CSV
             with open(path, "w", encoding="utf-8") as f:
+                f.write(f"# geophone: {geophone}\n")
+                f.write(f"# date: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
                 f.write(",".join(self._SWEEP_COLUMNS) + "\n")
                 for freq in sorted(self._sweep_results.keys()):
                     d = self._sweep_results[freq]
@@ -1221,7 +1243,7 @@ class Application(tk.Tk):
                     f.write(f"{i},{i/rate:.9f},{val}\n")
 
     def _save_npz(self, path):
-        save_dict = {}
+        save_dict = {"geophone": np.array(self._vars["cal_geophone"].get())}
         if self._last_adc is not None:
             save_dict["adc"] = np.array(self._last_adc, dtype=np.int32)
             save_dict["sample_rate"] = np.array(self._last_rate)
@@ -1260,6 +1282,7 @@ class Application(tk.Tk):
         sv("NI",  "samples_per_channel", self._vars["accel_spc"].get())
         sv("Shaker", "envelope_fraction", self._vars["cal_fraction"].get())
         sv("Shaker", "accel_cap_g",       self._vars["cal_cap"].get())
+        sv("Shaker", "geophone",          self._vars["cal_geophone"].get())
         _cfg_mgr.save()
 
     def _on_close(self):

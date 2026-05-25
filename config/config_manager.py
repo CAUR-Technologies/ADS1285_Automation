@@ -67,6 +67,8 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "servo_tolerance":           "0.05",   # tolerance relative (5%)
         "servo_max_iter":            "8",       # iterations max du servo
         "servo_start_vpp":           "0.1",     # amplitude Wavetek de depart (Vpp)
+        # Modele de geophone candidat en cours de test (metadonnee calibration)
+        "geophone":                  "HG-5VHS",
     },
     "General": {
         "data_output_dir": "data",
