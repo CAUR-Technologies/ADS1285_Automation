@@ -32,5 +32,15 @@ NI_AI_CHANNELS        = get("NI", "ai_channels")
 NI_SAMPLE_RATE        = int(get("NI", "sample_rate"))
 NI_SAMPLES_PER_CHANNEL = int(get("NI", "samples_per_channel"))
 
+# --- Banc shaker / calibration geophone ---
+SHAKER_STROKE_MM          = float(get("Shaker", "stroke_mm"))
+SHAKER_ENVELOPE_FRACTION  = float(get("Shaker", "envelope_fraction"))
+SHAKER_ACCEL_CAP_G        = float(get("Shaker", "accel_cap_g"))
+SHAKER_ACCEL_FLOOR_G      = float(get("Shaker", "accel_floor_g"))
+ACCEL_SENSITIVITY_V_PER_G = float(get("Shaker", "accel_sensitivity_v_per_g"))
+SHAKER_SERVO_TOLERANCE    = float(get("Shaker", "servo_tolerance"))
+SHAKER_SERVO_MAX_ITER     = int(get("Shaker", "servo_max_iter"))
+SHAKER_SERVO_START_VPP    = float(get("Shaker", "servo_start_vpp"))
+
 # --- Acquisition generale ---
 DATA_OUTPUT_DIR = get("General", "data_output_dir")

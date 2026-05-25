@@ -51,6 +51,23 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "sample_rate":        "10000",
         "samples_per_channel": "1000",
     },
+    "Shaker": {
+        # APS 113 : demi-course mecanique +/-38 mm
+        "stroke_mm":                 "38.0",
+        # Fraction de l'enveloppe stroke visee (marge de securite overtravel)
+        "envelope_fraction":         "0.6",
+        # Plafond absolu d'acceleration en haute frequence (g)
+        "accel_cap_g":               "1.0",
+        # Acceleration plancher (g) — en dessous, signal trop faible / inutile
+        "accel_floor_g":             "0.0015",
+        # Sensibilite chaine accelerometre NI : Silicon Designs 2240-005 = 800 mV/g.
+        # Si la boite Spektra applique un gain, ajuster cette valeur.
+        "accel_sensitivity_v_per_g": "0.8",
+        # Servo d'amplitude en boucle fermee (volts Wavetek -> g mesure)
+        "servo_tolerance":           "0.05",   # tolerance relative (5%)
+        "servo_max_iter":            "8",       # iterations max du servo
+        "servo_start_vpp":           "0.1",     # amplitude Wavetek de depart (Vpp)
+    },
     "General": {
         "data_output_dir": "data",
     },
