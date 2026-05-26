@@ -29,6 +29,7 @@ from config.settings import (
     ADS1285_BRIDGE_PORT, ADS1285_SAMPLE_RATE, ADS1285_NUM_SAMPLES,
     WAVETEK_PORT, WAVETEK_BAUD,
     APS_CONTROLLER_VERTICAL_PORT, APS_CONTROLLER_HORIZONTAL_PORT,
+    APS125_GAIN_VERTICAL, APS125_GAIN_HORIZONTAL,
     NI_DEVICE_NAME, NI_AI_CHANNELS, NI_SAMPLE_RATE, NI_SAMPLES_PER_CHANNEL,
     SHAKER_ENVELOPE_FRACTION, SHAKER_ACCEL_CAP_G, SHAKER_GEOPHONE,
     DATA_OUTPUT_DIR,
@@ -273,7 +274,11 @@ class Application(tk.Tk):
         self._last_adc = None          # list[int]
         self._last_accel = None        # np.ndarray | None
         self._last_rate = ADS1285_SAMPLE_RATE
-        self._sweep_results = {}       # {freq: {"adc": [...], "accel": array}}
+        # Resultats stockes PAR AXE (2 chaines shaker independantes V/H)
+        self._sweep_results = {"vertical": {}, "horizontal": {}}  # {axe: {freq: res}}
+        self._bench_results = {"vertical": {}, "horizontal": {}}  # {axe: {freq: res}}
+        # Valeurs des knobs APS 125 saisies par l'usager (ampli manuel, par axe)
+        self._aps125_gains = {"vertical": "", "horizontal": ""}
 
         # Variables tkinter
         self._vars = {}
@@ -449,6 +454,11 @@ class Application(tk.Tk):
             "horizontal": APS_CONTROLLER_HORIZONTAL_PORT,
         }
         self._aps_ctrl_positions = {"vertical": "0.0", "horizontal": "0.0"}
+        # Gains APS 125 (knob manuel) restaurés depuis la config
+        self._aps125_gains = {
+            "vertical":   APS125_GAIN_VERTICAL,
+            "horizontal": APS125_GAIN_HORIZONTAL,
+        }
 
         outer = ttk.LabelFrame(parent, text="  APS — Table de vibration")
         outer.pack(fill="x", padx=4, pady=3)
@@ -495,18 +505,31 @@ class Application(tk.Tk):
                                              command=self._set_aps_ctrl_active)
         self._btn_aps_ctrl_pos.pack(side="left")
 
+        # ── Amplificateur APS 125 (manuel — on enregistre la valeur du knob) ──
+        ttk.Separator(outer, orient="horizontal").pack(fill="x", padx=5, pady=3)
+        ttk.Label(outer, text="Amplificateur (APS 125 — manuel)",
+                  font=("", 9, "bold")).pack(anchor="w", padx=8, pady=(4, 0))
+        fa = ttk.Frame(outer)
+        fa.pack(fill="x", padx=8, pady=(3, 6))
+        fa.columnconfigure(1, weight=1)
+        self._row(fa, "Gain (knob) :",
+                  self._make_var("aps125_gain", self._aps125_gains["vertical"]), 0)
+        ttk.Label(outer, text="(valeur du knob saisie à la main, tracée avec l'étalonnage)",
+                  font=("", 8)).pack(anchor="w", padx=8, pady=(0, 4))
 
     def _on_aps_axis_change(self):
-        """Permute les champs Ctrl vers le nouvel axe."""
+        """Permute les champs Ctrl + gain ampli vers le nouvel axe."""
         prev = getattr(self, "_aps_prev_axis", None)
         if prev:
             self._aps_ctrl_ports[prev]    = self._vars["aps_ctrl_port"].get()
             self._aps_ctrl_positions[prev] = self._vars["aps_ctrl_pos"].get()
+            self._aps125_gains[prev]       = self._vars["aps125_gain"].get()
 
         axis = self._vars["aps_axis"].get()
         self._aps_prev_axis = axis
         self._vars["aps_ctrl_port"].set(self._aps_ctrl_ports[axis])
         self._vars["aps_ctrl_pos"].set(self._aps_ctrl_positions[axis])
+        self._vars["aps125_gain"].set(self._aps125_gains[axis])
 
         # Mettre a jour les boutons selon l'etat de connexion de cet axe
         ctrl_key = "aps_ctrl_v" if axis == "vertical" else "aps_ctrl_h"
@@ -617,7 +640,6 @@ class Application(tk.Tk):
         self._canvas_bench.get_tk_widget().pack(fill="both", expand=True)
         self._toolbar_bench = NavigationToolbar2Tk(self._canvas_bench, tab_bench)
         self._toolbar_bench.update()
-        self._bench_results = {}      # {freq: result dict de measure_bench_transfer}
 
     # ---------------------------------------------------------------
     # Barre d'actions
@@ -1031,6 +1053,12 @@ class Application(tk.Tk):
     # Balayage frequentiel
     # ===================================================================
 
+    def _aps125_gain_for(self, axis: str) -> str:
+        """Gain APS 125 d'un axe — valeur live pour l'axe actif, sinon le dict."""
+        if axis == self._vars["aps_axis"].get():
+            return self._vars["aps125_gain"].get()
+        return self._aps125_gains.get(axis, "")
+
     def _do_sweep(self):
         """Sweep de calibration géophone piloté par le TestBench (banc complet)."""
         axis = self._vars["aps_axis"].get()
@@ -1053,7 +1081,7 @@ class Application(tk.Tk):
         rate = int(self._vars["ads_rate"].get())
         count = int(self._vars["ads_count"].get())
         self._last_rate = rate
-        self._sweep_results = {}
+        self._sweep_results[axis] = {}        # n'écrase que l'axe courant
         self._stop_event.clear()
         self._set_busy(True, allow_stop=True)
         self._progress.configure(mode="determinate", maximum=len(freqs), value=0)
@@ -1067,13 +1095,13 @@ class Application(tk.Tk):
                 freqs,
                 geophone_count=count,
                 geophone_rate=rate,
-                on_point=lambda res: self.after(0, self._on_sweep_point, res),
+                on_point=lambda res: self.after(0, self._on_sweep_point, axis, res),
             )
 
         def _on_done(results):
             self._set_busy(False)
             n_ok = sum(1 for r in results if not r.get("skipped"))
-            self._set_status(f"Calibration terminée — {n_ok}/{len(results)} points")
+            self._set_status(f"Calibration {axis} terminée — {n_ok}/{len(results)} points")
 
         def _on_err(exc):
             self._set_busy(False)
@@ -1085,22 +1113,28 @@ class Application(tk.Tk):
 
         WorkerThread(self, _worker, _on_done, _on_err).start()
 
-    def _on_sweep_point(self, res: dict):
+    _AXIS_STYLE = {
+        "vertical":   ("tab:blue", "o-", "V"),
+        "horizontal": ("tab:red", "s-", "H"),
+    }
+
+    def _on_sweep_point(self, axis: str, res: dict):
         freq = res["freq_hz"]
-        self._sweep_results[freq] = res
-        self._progress.configure(value=len(self._sweep_results))
+        # Tracer l'axe + le gain ampli dans le résultat (traçabilité)
+        res["axis"] = axis
+        res["aps125_gain"] = self._aps125_gain_for(axis)
+        self._sweep_results[axis][freq] = res
+        self._progress.configure(value=len(self._sweep_results[axis]))
 
         if res.get("skipped"):
-            self._set_status(f"{freq} Hz ignoré — {res.get('note', '')}")
+            self._set_status(f"[{axis}] {freq} Hz ignoré — {res.get('note', '')}")
         else:
             self._set_status(
-                f"{freq} Hz : {res['measured_g']:.4g} g, "
+                f"[{axis}] {freq} Hz : {res['measured_g']:.4g} g, "
                 f"STF {res['stiffness']}, dépl. {res['displacement_mm']:.2f} mm, "
                 f"marge {res['safety_margin_mm']:.1f} mm")
 
-        # Graphe sensibilité géophone (counts/g) vs fréquence
-        freqs_done = sorted(f for f in self._sweep_results
-                            if self._sweep_results[f].get("sensitivity_counts_per_g"))
+        # Graphe sensibilité géophone (counts/g) vs fréquence — V et H superposés
         self._ax_sweep.clear()
         geophone = self._vars["cal_geophone"].get()
         self._ax_sweep.set_title(f"Sensibilite geophone vs frequence — {geophone}")
@@ -1108,10 +1142,18 @@ class Application(tk.Tk):
         self._ax_sweep.set_ylabel("Sensibilite (counts/g)")
         self._ax_sweep.set_xscale("log")
         self._ax_sweep.grid(True, which="both", linestyle="--", alpha=0.5)
-        if freqs_done:
-            sens = [self._sweep_results[f]["sensitivity_counts_per_g"]
-                    for f in freqs_done]
-            self._ax_sweep.plot(freqs_done, sens, "o-", color="tab:blue")
+        plotted = False
+        for ax_name, results in self._sweep_results.items():
+            fdone = sorted(f for f in results
+                           if results[f].get("sensitivity_counts_per_g"))
+            if not fdone:
+                continue
+            color, style, lbl = self._AXIS_STYLE[ax_name]
+            sens = [results[f]["sensitivity_counts_per_g"] for f in fdone]
+            self._ax_sweep.plot(fdone, sens, style, color=color, label=lbl)
+            plotted = True
+        if plotted:
+            self._ax_sweep.legend()
         self._fig_sweep.tight_layout()
         self._canvas_sweep.draw_idle()
 
@@ -1194,7 +1236,7 @@ class Application(tk.Tk):
             messagebox.showerror("Transfert banc", "Fréquences invalides.")
             return
 
-        self._bench_results = {}
+        self._bench_results[axis] = {}        # n'écrase que l'axe courant
         self._stop_event.clear()
         self._set_busy(True, allow_stop=True)
         self._progress.configure(mode="determinate", maximum=len(freqs), value=0)
@@ -1206,13 +1248,13 @@ class Application(tk.Tk):
         def _worker():
             return bench.measure_bench_transfer(
                 freqs,
-                on_point=lambda res: self.after(0, self._on_bench_point, res),
+                on_point=lambda res: self.after(0, self._on_bench_point, axis, res),
             )
 
         def _on_done(results):
             self._set_busy(False)
             n_ok = sum(1 for r in results if not r.get("skipped"))
-            self._set_status(f"Transfert banc terminé — {n_ok}/{len(results)} points")
+            self._set_status(f"Transfert banc {axis} terminé — {n_ok}/{len(results)} points")
 
         def _on_err(exc):
             self._set_busy(False)
@@ -1224,29 +1266,38 @@ class Application(tk.Tk):
 
         WorkerThread(self, _worker, _on_done, _on_err).start()
 
-    def _on_bench_point(self, res: dict):
+    def _on_bench_point(self, axis: str, res: dict):
         freq = res["freq_hz"]
-        self._bench_results[freq] = res
-        self._progress.configure(value=len(self._bench_results))
+        res["axis"] = axis
+        res["aps125_gain"] = self._aps125_gain_for(axis)
+        self._bench_results[axis][freq] = res
+        self._progress.configure(value=len(self._bench_results[axis]))
 
         if res.get("skipped"):
-            self._set_status(f"{freq} Hz ignoré — {res.get('note', '')}")
+            self._set_status(f"[{axis}] {freq} Hz ignoré — {res.get('note', '')}")
         else:
             self._set_status(
-                f"{freq} Hz : H_banc {res.get('h_bench_g_per_v', 0):.4g} g/V, "
+                f"[{axis}] {freq} Hz : H_banc {res.get('h_bench_g_per_v', 0):.4g} g/V, "
                 f"SNR {res.get('snr_db', 0):.1f} dB, THD {res.get('thd_percent', 0):.2f}%")
 
-        freqs_done = sorted(f for f in self._bench_results
-                            if self._bench_results[f].get("h_bench_g_per_v"))
         self._ax_bench.clear()
         self._ax_bench.set_title("Fonction de transfert du banc H_banc(f)")
         self._ax_bench.set_xlabel("Frequence (Hz)")
         self._ax_bench.set_ylabel("H_banc (g/V)")
         self._ax_bench.set_xscale("log")
         self._ax_bench.grid(True, which="both", linestyle="--", alpha=0.5)
-        if freqs_done:
-            hb = [self._bench_results[f]["h_bench_g_per_v"] for f in freqs_done]
-            self._ax_bench.plot(freqs_done, hb, "o-", color="tab:green")
+        plotted = False
+        for ax_name, results in self._bench_results.items():
+            fdone = sorted(f for f in results
+                           if results[f].get("h_bench_g_per_v"))
+            if not fdone:
+                continue
+            color, style, lbl = self._AXIS_STYLE[ax_name]
+            hb = [results[f]["h_bench_g_per_v"] for f in fdone]
+            self._ax_bench.plot(fdone, hb, style, color=color, label=lbl)
+            plotted = True
+        if plotted:
+            self._ax_bench.legend()
         self._fig_bench.tight_layout()
         self._canvas_bench.draw_idle()
 
@@ -1332,8 +1383,11 @@ class Application(tk.Tk):
     # Sauvegarde
     # ===================================================================
 
+    def _any_sweep_data(self) -> bool:
+        return any(self._sweep_results[a] for a in self._sweep_results)
+
     def _do_save(self):
-        if self._last_adc is None and not self._sweep_results:
+        if self._last_adc is None and not self._any_sweep_data():
             messagebox.showinfo("Sauvegarder",
                                 "Aucune donnee a sauvegarder.")
             return
@@ -1368,22 +1422,27 @@ class Application(tk.Tk):
     def _save_csv(self, path):
         rate = self._last_rate
         geophone = self._vars["cal_geophone"].get()
-        if self._sweep_results:
-            # Sauvegarde de la calibration en CSV
+        if self._any_sweep_data():
+            # Calibration géophone en CSV — une table, axe + gain par ligne
+            cols = ["axis", "aps125_gain"] + self._SWEEP_COLUMNS
             with open(path, "w", encoding="utf-8") as f:
                 f.write(f"# geophone: {geophone}\n")
                 f.write(f"# date: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
-                f.write(",".join(self._SWEEP_COLUMNS) + "\n")
-                for freq in sorted(self._sweep_results.keys()):
-                    d = self._sweep_results[freq]
-                    row = []
-                    for col in self._SWEEP_COLUMNS:
-                        val = d.get(col, "")
-                        if isinstance(val, float):
-                            row.append(f"{val:.6g}")
-                        else:
-                            row.append(str(val))
-                    f.write(",".join(row) + "\n")
+                f.write(f"# aps125_gain_vertical: {self._aps125_gain_for('vertical')}\n")
+                f.write(f"# aps125_gain_horizontal: {self._aps125_gain_for('horizontal')}\n")
+                f.write(",".join(cols) + "\n")
+                for ax_name in ("vertical", "horizontal"):
+                    results = self._sweep_results[ax_name]
+                    for freq in sorted(results.keys()):
+                        d = results[freq]
+                        row = []
+                        for col in cols:
+                            val = d.get(col, "")
+                            if isinstance(val, float):
+                                row.append(f"{val:.6g}")
+                            else:
+                                row.append(str(val).replace(",", ";"))
+                        f.write(",".join(row) + "\n")
         elif self._last_adc is not None:
             with open(path, "w", encoding="utf-8") as f:
                 f.write("index,time_s,value\n")
@@ -1391,20 +1450,38 @@ class Application(tk.Tk):
                     f.write(f"{i},{i/rate:.9f},{val}\n")
 
     def _save_npz(self, path):
-        save_dict = {"geophone": np.array(self._vars["cal_geophone"].get())}
+        save_dict = {
+            "geophone": np.array(self._vars["cal_geophone"].get()),
+            "aps125_gain_vertical": np.array(self._aps125_gain_for("vertical")),
+            "aps125_gain_horizontal": np.array(self._aps125_gain_for("horizontal")),
+        }
         if self._last_adc is not None:
             save_dict["adc"] = np.array(self._last_adc, dtype=np.int32)
             save_dict["sample_rate"] = np.array(self._last_rate)
         if self._last_accel is not None:
             save_dict["accel"] = self._last_accel
-        if self._sweep_results:
-            freqs_done = sorted(self._sweep_results.keys())
+        # Sweep géophone par axe
+        for ax_name in ("vertical", "horizontal"):
+            results = self._sweep_results[ax_name]
+            if not results:
+                continue
+            fdone = sorted(results.keys())
             for col in self._SWEEP_COLUMNS:
-                if col in ("note",):
+                if col == "note":
                     continue
-                save_dict[f"sweep_{col}"] = np.array(
-                    [self._sweep_results[fr].get(col, 0) for fr in freqs_done],
+                save_dict[f"{ax_name}_sweep_{col}"] = np.array(
+                    [results[fr].get(col, 0) for fr in fdone],
                     dtype=np.float64 if col != "skipped" else np.bool_)
+        # Transfert banc H_banc par axe (si mesuré)
+        for ax_name in ("vertical", "horizontal"):
+            results = self._bench_results[ax_name]
+            if not results:
+                continue
+            fdone = sorted(results.keys())
+            save_dict[f"{ax_name}_hbench_freq"] = np.array(fdone, dtype=np.float64)
+            save_dict[f"{ax_name}_hbench_g_per_v"] = np.array(
+                [results[fr].get("h_bench_g_per_v", 0) for fr in fdone],
+                dtype=np.float64)
         np.savez(path, **save_dict)
 
     # ===================================================================
@@ -1416,6 +1493,7 @@ class Application(tk.Tk):
         # Synchronise les champs APS de l'axe actif vers les dicts
         axis = self._vars["aps_axis"].get()
         self._aps_ctrl_ports[axis] = self._vars["aps_ctrl_port"].get()
+        self._aps125_gains[axis]   = self._vars["aps125_gain"].get()
 
         sv = _cfg_mgr.set_value
         sv("ADS1285", "bridge_port",  self._vars["ads_port"].get())
@@ -1424,6 +1502,8 @@ class Application(tk.Tk):
         sv("Wavetek",  "port",         self._vars["wav_port"].get())
         sv("APS", "controller_vertical_port",   self._aps_ctrl_ports["vertical"])
         sv("APS", "controller_horizontal_port", self._aps_ctrl_ports["horizontal"])
+        sv("APS", "amplifier_gain_vertical",    self._aps125_gains["vertical"])
+        sv("APS", "amplifier_gain_horizontal",  self._aps125_gains["horizontal"])
         sv("NI",  "device_name",         self._vars["accel_dev"].get())
         sv("NI",  "ai_channels",         self._vars["accel_ch"].get())
         sv("NI",  "sample_rate",         self._vars["accel_rate"].get())

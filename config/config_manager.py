@@ -39,6 +39,10 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "controller_horizontal_port": "COM4",
         "amplifier_vertical_port":    "COM5",
         "amplifier_horizontal_port":  "COM6",
+        # Valeur du gain (knob) de l'ampli APS 125 — saisie manuelle (ampli sans
+        # interface serie). Tracee avec chaque etalonnage (regle d'invalidation).
+        "amplifier_gain_vertical":    "",
+        "amplifier_gain_horizontal":  "",
     },
     "Wavetek": {
         "port":    "COM5",

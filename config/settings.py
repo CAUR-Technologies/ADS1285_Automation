@@ -20,6 +20,8 @@ APS_CONTROLLER_VERTICAL_PORT   = get("APS", "controller_vertical_port")
 APS_CONTROLLER_HORIZONTAL_PORT = get("APS", "controller_horizontal_port")
 APS_AMPLIFIER_VERTICAL_PORT    = get("APS", "amplifier_vertical_port")
 APS_AMPLIFIER_HORIZONTAL_PORT  = get("APS", "amplifier_horizontal_port")
+APS125_GAIN_VERTICAL           = get("APS", "amplifier_gain_vertical")
+APS125_GAIN_HORIZONTAL         = get("APS", "amplifier_gain_horizontal")
 
 # --- Wavetek Model 39A ---
 WAVETEK_PORT    = get("Wavetek", "port")
