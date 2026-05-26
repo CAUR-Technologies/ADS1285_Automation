@@ -31,6 +31,7 @@ from config.settings import (
     WAVETEK_PORT, WAVETEK_BAUD,
     APS_CONTROLLER_VERTICAL_PORT, APS_CONTROLLER_HORIZONTAL_PORT,
     APS125_GAIN_VERTICAL, APS125_GAIN_HORIZONTAL,
+    APS125_CURRENT_LIMIT_VERTICAL, APS125_CURRENT_LIMIT_HORIZONTAL,
     NI_DEVICE_NAME, NI_AI_CHANNELS, NI_SAMPLE_RATE, NI_SAMPLES_PER_CHANNEL,
     NI_REF_CHANNEL_VERTICAL, NI_REF_CHANNEL_HORIZONTAL,
     SHAKER_ENVELOPE_FRACTION, SHAKER_ACCEL_CAP_G, SHAKER_GEOPHONE,
@@ -290,6 +291,7 @@ class Application(tk.Tk):
         self._cross_results = {}       # {freq: entry} sensibilité transversale
         # Valeurs des knobs APS 125 saisies par l'usager (ampli manuel, par axe)
         self._aps125_gains = {"vertical": "", "horizontal": ""}
+        self._aps125_climits = {"vertical": "", "horizontal": ""}
 
         # Variables tkinter
         self._vars = {}
@@ -489,10 +491,14 @@ class Application(tk.Tk):
             "horizontal": APS_CONTROLLER_HORIZONTAL_PORT,
         }
         self._aps_ctrl_positions = {"vertical": "0.0", "horizontal": "0.0"}
-        # Gains APS 125 (knob manuel) restaurés depuis la config
+        # Knobs APS 125 (manuels) restaurés depuis la config
         self._aps125_gains = {
             "vertical":   APS125_GAIN_VERTICAL,
             "horizontal": APS125_GAIN_HORIZONTAL,
+        }
+        self._aps125_climits = {
+            "vertical":   APS125_CURRENT_LIMIT_VERTICAL,
+            "horizontal": APS125_CURRENT_LIMIT_HORIZONTAL,
         }
 
         outer = ttk.LabelFrame(parent, text="  APS — Table de vibration")
@@ -547,9 +553,11 @@ class Application(tk.Tk):
         fa = ttk.Frame(outer)
         fa.pack(fill="x", padx=8, pady=(3, 6))
         fa.columnconfigure(1, weight=1)
-        self._row(fa, "Gain (knob) :",
+        self._row(fa, "Gain (dB) :",
                   self._make_var("aps125_gain", self._aps125_gains["vertical"]), 0)
-        ttk.Label(outer, text="(valeur du knob saisie à la main, tracée avec l'étalonnage)",
+        self._row(fa, "Limite courant (A RMS) :",
+                  self._make_var("aps125_climit", self._aps125_climits["vertical"]), 1)
+        ttk.Label(outer, text="(knobs saisis à la main, tracés avec l'étalonnage)",
                   font=("", 8)).pack(anchor="w", padx=8, pady=(0, 4))
 
     def _on_aps_axis_change(self):
@@ -559,12 +567,14 @@ class Application(tk.Tk):
             self._aps_ctrl_ports[prev]    = self._vars["aps_ctrl_port"].get()
             self._aps_ctrl_positions[prev] = self._vars["aps_ctrl_pos"].get()
             self._aps125_gains[prev]       = self._vars["aps125_gain"].get()
+            self._aps125_climits[prev]     = self._vars["aps125_climit"].get()
 
         axis = self._vars["aps_axis"].get()
         self._aps_prev_axis = axis
         self._vars["aps_ctrl_port"].set(self._aps_ctrl_ports[axis])
         self._vars["aps_ctrl_pos"].set(self._aps_ctrl_positions[axis])
         self._vars["aps125_gain"].set(self._aps125_gains[axis])
+        self._vars["aps125_climit"].set(self._aps125_climits[axis])
 
         # Mettre a jour les boutons selon l'etat de connexion de cet axe
         ctrl_key = "aps_ctrl_v" if axis == "vertical" else "aps_ctrl_h"
@@ -1127,6 +1137,12 @@ class Application(tk.Tk):
             return self._vars["aps125_gain"].get()
         return self._aps125_gains.get(axis, "")
 
+    def _aps125_climit_for(self, axis: str) -> str:
+        """Limite courant APS 125 d'un axe (live pour l'axe actif, sinon dict)."""
+        if axis == self._vars["aps_axis"].get():
+            return self._vars["aps125_climit"].get()
+        return self._aps125_climits.get(axis, "")
+
     def _do_sweep(self):
         """Sweep de calibration géophone piloté par le TestBench (banc complet)."""
         axis = self._vars["aps_axis"].get()
@@ -1188,9 +1204,10 @@ class Application(tk.Tk):
 
     def _on_sweep_point(self, axis: str, res: dict):
         freq = res["freq_hz"]
-        # Tracer l'axe + le gain ampli dans le résultat (traçabilité)
+        # Tracer l'axe + les knobs ampli dans le résultat (traçabilité)
         res["axis"] = axis
         res["aps125_gain"] = self._aps125_gain_for(axis)
+        res["aps125_current_limit"] = self._aps125_climit_for(axis)
         self._sweep_results[axis][freq] = res
         self._progress.configure(value=len(self._sweep_results[axis]))
 
@@ -1338,6 +1355,7 @@ class Application(tk.Tk):
         freq = res["freq_hz"]
         res["axis"] = axis
         res["aps125_gain"] = self._aps125_gain_for(axis)
+        res["aps125_current_limit"] = self._aps125_climit_for(axis)
         self._bench_results[axis][freq] = res
         self._progress.configure(value=len(self._bench_results[axis]))
 
@@ -1388,6 +1406,7 @@ class Application(tk.Tk):
             json.dump({"axis": axis,
                        "date": datetime.now().isoformat(timespec="seconds"),
                        "aps125_gain": self._aps125_gain_for(axis),
+                       "aps125_current_limit": self._aps125_climit_for(axis),
                        "h_banc_g_per_v": ref}, fh, indent=2)
         self._set_status(f"Référence H_banc {axis} enregistrée ({len(ref)} points)")
 
@@ -1861,13 +1880,16 @@ class Application(tk.Tk):
         rate = self._last_rate
         geophone = self._vars["cal_geophone"].get()
         if self._any_sweep_data():
-            # Calibration géophone en CSV — une table, axe + gain par ligne
-            cols = ["axis", "aps125_gain"] + self._SWEEP_COLUMNS
+            # Calibration géophone en CSV — une table, axe + knobs par ligne
+            cols = (["axis", "aps125_gain", "aps125_current_limit"]
+                    + self._SWEEP_COLUMNS)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(f"# geophone: {geophone}\n")
                 f.write(f"# date: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
                 f.write(f"# aps125_gain_vertical: {self._aps125_gain_for('vertical')}\n")
                 f.write(f"# aps125_gain_horizontal: {self._aps125_gain_for('horizontal')}\n")
+                f.write(f"# aps125_current_limit_vertical: {self._aps125_climit_for('vertical')}\n")
+                f.write(f"# aps125_current_limit_horizontal: {self._aps125_climit_for('horizontal')}\n")
                 f.write(",".join(cols) + "\n")
                 for ax_name in ("vertical", "horizontal"):
                     results = self._sweep_results[ax_name]
@@ -1892,6 +1914,10 @@ class Application(tk.Tk):
             "geophone": np.array(self._vars["cal_geophone"].get()),
             "aps125_gain_vertical": np.array(self._aps125_gain_for("vertical")),
             "aps125_gain_horizontal": np.array(self._aps125_gain_for("horizontal")),
+            "aps125_current_limit_vertical":
+                np.array(self._aps125_climit_for("vertical")),
+            "aps125_current_limit_horizontal":
+                np.array(self._aps125_climit_for("horizontal")),
         }
         if self._last_adc is not None:
             save_dict["adc"] = np.array(self._last_adc, dtype=np.int32)
@@ -1948,6 +1974,7 @@ class Application(tk.Tk):
         axis = self._vars["aps_axis"].get()
         self._aps_ctrl_ports[axis] = self._vars["aps_ctrl_port"].get()
         self._aps125_gains[axis]   = self._vars["aps125_gain"].get()
+        self._aps125_climits[axis] = self._vars["aps125_climit"].get()
 
         sv = _cfg_mgr.set_value
         sv("ADS1285", "bridge_port",  self._vars["ads_port"].get())
@@ -1958,6 +1985,8 @@ class Application(tk.Tk):
         sv("APS", "controller_horizontal_port", self._aps_ctrl_ports["horizontal"])
         sv("APS", "amplifier_gain_vertical",    self._aps125_gains["vertical"])
         sv("APS", "amplifier_gain_horizontal",  self._aps125_gains["horizontal"])
+        sv("APS", "amplifier_current_limit_vertical",   self._aps125_climits["vertical"])
+        sv("APS", "amplifier_current_limit_horizontal", self._aps125_climits["horizontal"])
         sv("NI",  "device_name",         self._vars["accel_dev"].get())
         sv("NI",  "ai_channels",         self._vars["accel_ch"].get())
         sv("NI",  "sample_rate",         self._vars["accel_rate"].get())

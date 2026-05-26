@@ -22,6 +22,8 @@ APS_AMPLIFIER_VERTICAL_PORT    = get("APS", "amplifier_vertical_port")
 APS_AMPLIFIER_HORIZONTAL_PORT  = get("APS", "amplifier_horizontal_port")
 APS125_GAIN_VERTICAL           = get("APS", "amplifier_gain_vertical")
 APS125_GAIN_HORIZONTAL         = get("APS", "amplifier_gain_horizontal")
+APS125_CURRENT_LIMIT_VERTICAL   = get("APS", "amplifier_current_limit_vertical")
+APS125_CURRENT_LIMIT_HORIZONTAL = get("APS", "amplifier_current_limit_horizontal")
 
 # --- Wavetek Model 39A ---
 WAVETEK_PORT    = get("Wavetek", "port")

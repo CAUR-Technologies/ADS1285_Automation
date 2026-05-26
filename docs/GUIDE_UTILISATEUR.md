@@ -43,8 +43,14 @@ APS 125). Aucun re-routage manuel n'est nécessaire entre les axes.
 1. **Monter le géophone** sur l'armature du shaker de l'axe à tester (V ou H),
    bien couplé et orienté selon son axe sensible. (Le Wavetek est déjà routé aux
    deux chaînes par le splitter — pas de câble à déplacer.)
-2. **Régler les knobs de l'APS 125** de chaque axe utilisé (gain) à la valeur
-   voulue, et **noter ces valeurs** — vous les saisirez dans le logiciel.
+2. **Régler les knobs de l'APS 125** de chaque axe utilisé et **noter leurs
+   valeurs** (à saisir dans le logiciel) :
+   - **Variable Gain (dB)** : fixe l'amplitude de sortie → définit la réponse
+     du banc (`H_banc`). Knob d'étalonnage principal.
+   - **Current Limit (A RMS)** : protection de la bobine. À régler assez **haut**
+     pour ne pas écrêter aux points exigeants (haute fréquence / 1 g) sans
+     dépasser le courant nominal du shaker. Tracé pour la traçabilité et le
+     diagnostic d'écrêtage (n'entre pas dans le calcul).
 3. Mettre sous tension : APS 0109 (V et H), APS 125 (V et H), Wavetek, carte
    ADS1285, boîtier NI.
 
@@ -68,7 +74,8 @@ Dans le panneau de gauche, pour chacun, cliquer **Connecter** :
 - **Wavetek 39A** : port COM.
 - **APS — Table de vibration** : choisir l'**Axe** (Vertical/Horizontal) avec le
   bouton radio, renseigner le **port du contrôleur**, cliquer **Connecter**.
-  Saisir le **Gain (knob) APS 125** noté à l'étape 4.3.
+  Saisir le **Gain (dB)** et la **Limite courant (A RMS)** de l'APS 125 notés
+  à l'étape 4.2.
 - **Accéléromètre NI** : device + canaux.
 
 > Les deux contrôleurs (V et H) peuvent rester connectés en même temps ; le

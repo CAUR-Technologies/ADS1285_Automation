@@ -150,7 +150,7 @@ Adapter les **ports COM** selon votre matériel.
 | ADC (géophone) | Texas Instruments ADS1285 EVM | TCP/IP (bridge 32-bit) | `ADS1285` |
 | Générateur | Wavetek Model 39A | RS-232 (SCPI-like, CRLF) | `Wavetek39A` |
 | Contrôleur | APS 0109 (Spektra) | RS-232 custom, 19200, terminaison `\x00` | `APSController` |
-| Amplificateur | APS 125 (×2, V+H) | **manuel** (pas d'interface) — gain saisi/tracé | — |
+| Amplificateur | APS 125 (×2, V+H) | **manuel** — knobs Gain (dB) + Current Limit (A RMS) saisis/tracés | — |
 | Shaker | APS 113 (×2, ±38 mm, 133 N) | via APS 0109 | `shaker_physics` |
 | Accéléromètre réf. | Silicon Designs 2240-005 (×2, un/axe) → NI USB-6221 | NI-DAQmx | `Accelerometer` |
 
