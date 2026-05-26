@@ -340,12 +340,26 @@ class Application(tk.Tk):
                   self._make_var("cal_fraction", SHAKER_ENVELOPE_FRACTION), 1)
         self._row(f, "Plafond (g) :",
                   self._make_var("cal_cap", SHAKER_ACCEL_CAP_G), 2)
+        self._row(f, "Bruit (s) :",
+                  self._make_var("cal_noise_s", "60"), 3)
 
         bf = ttk.Frame(lf)
-        bf.pack(fill="x", padx=5, pady=(0, 5))
-        self._btn_cal_zero = ttk.Button(bf, text="Centrage ZER",
+        bf.pack(fill="x", padx=5, pady=(0, 3))
+        self._btn_cal_zero = ttk.Button(bf, text="Centrage ZER", width=12,
                                         command=self._center_zero)
-        self._btn_cal_zero.pack(side="left")
+        self._btn_cal_zero.pack(side="left", padx=(0, 4))
+        self._btn_noise = ttk.Button(bf, text="Plancher bruit", width=13,
+                                     command=self._measure_noise_floor)
+        self._btn_noise.pack(side="left")
+
+        bf2 = ttk.Frame(lf)
+        bf2.pack(fill="x", padx=5, pady=(0, 3))
+        self._btn_bench = ttk.Button(bf2, text="Transfert banc (H_banc)",
+                                     command=self._measure_bench_transfer)
+        self._btn_bench.pack(side="left")
+
+        self._lbl_noise_floor = ttk.Label(lf, text="", font=("", 8))
+        self._lbl_noise_floor.pack(anchor="w", padx=6)
         ttk.Label(lf, text="(Balayage = sweep calibration géophone)",
                   font=("", 8)).pack(anchor="w", padx=6, pady=(0, 4))
 
@@ -588,6 +602,23 @@ class Application(tk.Tk):
         self._toolbar_sweep = NavigationToolbar2Tk(self._canvas_sweep, tab_sweep)
         self._toolbar_sweep.update()
 
+        # Onglet Transfert banc (H_banc)
+        tab_bench = ttk.Frame(self._notebook)
+        self._notebook.add(tab_bench, text="  Transfert banc  ")
+        self._fig_bench = Figure(figsize=(8, 5), dpi=100)
+        self._ax_bench = self._fig_bench.add_subplot(111)
+        self._ax_bench.set_title("Fonction de transfert du banc H_banc(f)")
+        self._ax_bench.set_xlabel("Frequence (Hz)")
+        self._ax_bench.set_ylabel("H_banc (g/V)")
+        self._ax_bench.set_xscale("log")
+        self._ax_bench.grid(True, which="both", linestyle="--", alpha=0.5)
+        self._fig_bench.tight_layout()
+        self._canvas_bench = FigureCanvasTkAgg(self._fig_bench, master=tab_bench)
+        self._canvas_bench.get_tk_widget().pack(fill="both", expand=True)
+        self._toolbar_bench = NavigationToolbar2Tk(self._canvas_bench, tab_bench)
+        self._toolbar_bench.update()
+        self._bench_results = {}      # {freq: result dict de measure_bench_transfer}
+
     # ---------------------------------------------------------------
     # Barre d'actions
     # ---------------------------------------------------------------
@@ -667,7 +698,8 @@ class Application(tk.Tk):
         self._busy = busy
         state = "disabled" if busy else "normal"
         for btn in (self._btn_connect_all, self._btn_acquire,
-                    self._btn_sweep, self._btn_save, self._btn_cal_zero):
+                    self._btn_sweep, self._btn_save, self._btn_cal_zero,
+                    self._btn_noise, self._btn_bench):
             btn.configure(state=state)
         self._btn_stop.configure(state="normal" if (busy and allow_stop)
                                   else "disabled")
@@ -1102,6 +1134,121 @@ class Application(tk.Tk):
             self._set_status(f"Centrage ZER terminé (ZER={zer})")
 
         WorkerThread(self, _worker, _on_done, self._on_error).start()
+
+    def _measure_noise_floor(self):
+        """Mesure le plancher de bruit (accéléromètre, shaker à l'arrêt)."""
+        if not (self._dm.connected.get("accel") and self._dm.instances.get("accel")):
+            messagebox.showwarning("Plancher de bruit",
+                                   "Accéléromètre non connecté.")
+            return
+        try:
+            duration = float(self._vars["cal_noise_s"].get())
+        except ValueError:
+            messagebox.showerror("Plancher de bruit", "Durée invalide.")
+            return
+        accel = self._dm.instances["accel"]
+        # Couper l'excitation si le Wavetek est connecté
+        if self._dm.connected.get("wavetek") and self._dm.instances.get("wavetek"):
+            try:
+                self._dm.instances["wavetek"].disable_output()
+            except Exception:
+                pass
+        self._set_busy(True)
+        self._set_status(f"Plancher de bruit ({duration:.0f}s, shaker arrêté)...")
+        self._progress.configure(mode="indeterminate")
+        self._progress.start(20)
+
+        def _worker():
+            return accel.measure_noise_floor(duration)
+
+        def _on_done(floor_g):
+            self._progress.stop()
+            self._progress.configure(mode="determinate", value=0)
+            self._set_busy(False)
+            self._lbl_noise_floor.configure(
+                text=f"Plancher de bruit : {floor_g:.4g} g RMS")
+            self._set_status(f"Plancher de bruit = {floor_g:.4g} g RMS")
+
+        def _on_err(exc):
+            self._progress.stop()
+            self._progress.configure(mode="determinate", value=0)
+            self._on_error(exc)
+
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
+    def _measure_bench_transfer(self):
+        """Mesure la fonction de transfert du banc H_banc(f) (étape 1)."""
+        axis = self._vars["aps_axis"].get()
+        try:
+            fraction = float(self._vars["cal_fraction"].get())
+            cap = float(self._vars["cal_cap"].get())
+            bench = self._dm.make_testbench(axis, fraction=fraction,
+                                            accel_cap_g=cap)
+        except (ValueError, RuntimeError) as e:
+            messagebox.showwarning("Transfert banc", str(e))
+            return
+        try:
+            freqs = [float(f.strip())
+                     for f in self._vars["sweep_freqs"].get().split(",")]
+        except ValueError:
+            messagebox.showerror("Transfert banc", "Fréquences invalides.")
+            return
+
+        self._bench_results = {}
+        self._stop_event.clear()
+        self._set_busy(True, allow_stop=True)
+        self._progress.configure(mode="determinate", maximum=len(freqs), value=0)
+        self._notebook.select(3)  # onglet Transfert banc
+
+        bench.set_stop_event(self._stop_event)
+        bench.set_logger(lambda m: self.after(0, self._set_status, m))
+
+        def _worker():
+            return bench.measure_bench_transfer(
+                freqs,
+                on_point=lambda res: self.after(0, self._on_bench_point, res),
+            )
+
+        def _on_done(results):
+            self._set_busy(False)
+            n_ok = sum(1 for r in results if not r.get("skipped"))
+            self._set_status(f"Transfert banc terminé — {n_ok}/{len(results)} points")
+
+        def _on_err(exc):
+            self._set_busy(False)
+            if isinstance(exc, TestBenchAborted):
+                self._set_status("Transfert banc interrompu (sécurité)")
+                messagebox.showwarning("Transfert banc", str(exc))
+            else:
+                self._on_error(exc)
+
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
+    def _on_bench_point(self, res: dict):
+        freq = res["freq_hz"]
+        self._bench_results[freq] = res
+        self._progress.configure(value=len(self._bench_results))
+
+        if res.get("skipped"):
+            self._set_status(f"{freq} Hz ignoré — {res.get('note', '')}")
+        else:
+            self._set_status(
+                f"{freq} Hz : H_banc {res.get('h_bench_g_per_v', 0):.4g} g/V, "
+                f"SNR {res.get('snr_db', 0):.1f} dB, THD {res.get('thd_percent', 0):.2f}%")
+
+        freqs_done = sorted(f for f in self._bench_results
+                            if self._bench_results[f].get("h_bench_g_per_v"))
+        self._ax_bench.clear()
+        self._ax_bench.set_title("Fonction de transfert du banc H_banc(f)")
+        self._ax_bench.set_xlabel("Frequence (Hz)")
+        self._ax_bench.set_ylabel("H_banc (g/V)")
+        self._ax_bench.set_xscale("log")
+        self._ax_bench.grid(True, which="both", linestyle="--", alpha=0.5)
+        if freqs_done:
+            hb = [self._bench_results[f]["h_bench_g_per_v"] for f in freqs_done]
+            self._ax_bench.plot(freqs_done, hb, "o-", color="tab:green")
+        self._fig_bench.tight_layout()
+        self._canvas_bench.draw_idle()
 
     def _do_stop(self):
         self._stop_event.set()
