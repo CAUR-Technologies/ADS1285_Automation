@@ -1213,6 +1213,7 @@ class Application(tk.Tk):
     _SWEEP_COLUMNS = [
         "freq_hz", "target_g", "measured_g", "vpp", "stiffness",
         "displacement_mm", "safety_margin_mm",
+        "snr_db", "thd_percent",
         "geophone_counts_peak", "sensitivity_counts_per_g",
         "skipped", "note",
     ]

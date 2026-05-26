@@ -31,6 +31,7 @@ from config.settings import (
     SHAKER_SERVO_MAX_ITER,
     SHAKER_SERVO_START_VPP,
 )
+from constants import SNR_MIN_DB
 
 
 class TestBenchError(RuntimeError):
@@ -76,6 +77,9 @@ class TestBench:
         self._settle_s = 4.0         # temps de stabilisation par défaut (s)
         self._stop = None            # threading.Event optionnel
         self._log = print            # callback de log (remplaçable)
+
+        self._h_bench = {}           # {freq: H_banc en g/V} — caractérisation banc
+        self._noise_floor_g = None   # plancher de bruit mesuré (g RMS)
 
     # ──────────────────────────────────────────────────────────────────
     # Configuration / utilitaires
@@ -266,7 +270,63 @@ class TestBench:
         return result
 
     # ──────────────────────────────────────────────────────────────────
-    # Sweep de calibration complet
+    # Étape 1 : plancher de bruit + fonction de transfert du banc H_banc(f)
+    # ──────────────────────────────────────────────────────────────────
+
+    def measure_noise_floor(self, duration_s: float = 60.0) -> float:
+        """
+        Plancher de bruit (g RMS) : shaker arrêté, ampli allumé.
+        Sert au calcul du SNR par point de calibration.
+        """
+        self._log(f"[banc] plancher de bruit ({duration_s:.0f}s, shaker arrêté)…")
+        self._safe_shutdown()
+        floor = self._accel.measure_noise_floor(duration_s)
+        self._noise_floor_g = floor
+        self._log(f"[banc] plancher de bruit = {floor:.6g} g RMS")
+        return floor
+
+    def measure_bench_transfer(self, freqs, on_point=None) -> list[dict]:
+        """
+        Étape 1 de la calibration : fonction de transfert du banc
+
+            H_banc(f) = a_table(f) / V_wavetek(f)   [g/V]
+
+        Pour chaque fréquence : réglage sûr (enveloppe + stiffness + servo),
+        puis mesure de l'accélération de référence, du SNR et de la THD.
+        Stocke H_banc dans self._h_bench (accessible via bench_transfer()).
+
+        Lève TestBenchAborted sur overtravel / arrêt utilisateur.
+        """
+        results = []
+        try:
+            for freq in freqs:
+                self._check_stop()
+                res = self.set_frequency_safe(freq)
+                if not res["skipped"]:
+                    m = self._accel.measure(freq)
+                    res["measured_g"] = m["accel_g"]
+                    res["snr_db"] = m["snr_db"]
+                    res["thd_percent"] = m["thd_percent"]
+                    res["h_bench_g_per_v"] = (m["accel_g"] / res["vpp"]
+                                              if res["vpp"] > 1e-9 else 0.0)
+                    self._h_bench[freq] = res["h_bench_g_per_v"]
+                    if m["snr_db"] < SNR_MIN_DB:
+                        res["note"] = (f"SNR {m['snr_db']:.1f} dB < {SNR_MIN_DB} dB")
+                    self._log(f"[banc] {freq} Hz : H_banc={res['h_bench_g_per_v']:.4g} g/V, "
+                              f"SNR={m['snr_db']:.1f} dB, THD={m['thd_percent']:.2f}%")
+                results.append(res)
+                if on_point is not None:
+                    on_point(res)
+        finally:
+            self._safe_shutdown()
+        return results
+
+    def bench_transfer(self) -> dict:
+        """Retourne la dernière fonction de transfert du banc {freq: g/V}."""
+        return dict(self._h_bench)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Étape 2 : sweep de calibration géophone
     # ──────────────────────────────────────────────────────────────────
 
     def calibration_sweep(self, freqs,
@@ -295,14 +355,21 @@ class TestBench:
                 self._check_stop()
                 res = self.set_frequency_safe(freq)
 
-                if not res["skipped"] and self._ads is not None:
-                    samples = self._ads.acquire(geophone_count, geophone_rate)
-                    amp = coherent_amplitude_peak(samples, freq, geophone_rate)
-                    res["geophone_counts_peak"] = amp
-                    if res["measured_g"] > 1e-9:
-                        res["sensitivity_counts_per_g"] = amp / res["measured_g"]
-                    else:
-                        res["sensitivity_counts_per_g"] = 0.0
+                if not res["skipped"]:
+                    # Mesure de référence enrichie (g + SNR + THD) en une acquisition
+                    m = self._accel.measure(freq)
+                    res["measured_g"] = m["accel_g"]
+                    res["snr_db"] = m["snr_db"]
+                    res["thd_percent"] = m["thd_percent"]
+                    if m["snr_db"] < SNR_MIN_DB:
+                        res["note"] = f"SNR {m['snr_db']:.1f} dB < {SNR_MIN_DB} dB"
+
+                    if self._ads is not None:
+                        samples = self._ads.acquire(geophone_count, geophone_rate)
+                        amp = coherent_amplitude_peak(samples, freq, geophone_rate)
+                        res["geophone_counts_peak"] = amp
+                        res["sensitivity_counts_per_g"] = (
+                            amp / res["measured_g"] if res["measured_g"] > 1e-9 else 0.0)
 
                 results.append(res)
                 if on_point is not None:
