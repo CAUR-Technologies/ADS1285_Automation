@@ -21,8 +21,10 @@ Wavetek ─► APS 0109 (contrôleur position, +offset DC) ─► APS 125 (ampli
                                    (NI USB-6221)                         (carte ADS1285)
 ```
 Deux chaînes indépendantes existent : **axe Vertical (V)** et **axe Horizontal (H)**,
-chacune avec son shaker et son ampli APS 125. Un **seul Wavetek** alimente une
-chaîne à la fois.
+chacune avec son shaker, son ampli APS 125 et son **accéléromètre de référence**
+(canal NI dédié, ex. ai0=V, ai1=H). Un **seul Wavetek** alimente les deux chaînes
+via un **splitter** (amplitude commune ; chaque axe est dosé par le gain de son
+APS 125). Aucun re-routage manuel n'est nécessaire entre les axes.
 
 ## 3. ⚠️ Règles de sécurité (à lire avant toute manipulation)
 
@@ -39,12 +41,15 @@ chaîne à la fois.
 ## 4. Préparation matérielle
 
 1. **Monter le géophone** sur l'armature du shaker de l'axe à tester (V ou H),
-   bien couplé et orienté selon son axe sensible.
-2. **Router le signal Wavetek** vers la chaîne de l'axe choisi (entrée Signal In
-   de l'APS 0109 correspondant).
-3. **Régler les knobs de l'APS 125** de cet axe (gain) à la valeur voulue, et
-   **noter cette valeur** — vous la saisirez dans le logiciel.
-4. Mettre sous tension : APS 0109, APS 125, Wavetek, carte ADS1285, boîtier NI.
+   bien couplé et orienté selon son axe sensible. (Le Wavetek est déjà routé aux
+   deux chaînes par le splitter — pas de câble à déplacer.)
+2. **Régler les knobs de l'APS 125** de chaque axe utilisé (gain) à la valeur
+   voulue, et **noter ces valeurs** — vous les saisirez dans le logiciel.
+3. Mettre sous tension : APS 0109 (V et H), APS 125 (V et H), Wavetek, carte
+   ADS1285, boîtier NI.
+
+> Le panneau « onglets » inclut aussi **Linéarité**. La barre du bas affiche les
+> indicateurs de connexion et le statut.
 
 ## 5. Démarrer le logiciel
 
@@ -99,19 +104,23 @@ stiffness appliquée, déplacement, marge de sécurité (ou SNR/THD pour H_banc)
 > **À refaire une seule fois par configuration** : 7.3 (bruit) et 7.4 (H_banc)
 > caractérisent le **banc** (par axe). **À refaire pour chaque géophone** : 7.5.
 
-## 8. Étalonner le second axe
+## 8. Étalonner les deux axes
 
-**Option A — manuelle :**
-1. Couper la sortie, **router le Wavetek** vers l'autre chaîne, remonter le
-   géophone sur l'autre shaker.
-2. Régler/noter les **knobs APS 125** de cet axe.
-3. Dans le GUI : cocher l'autre **Axe**, saisir son **Gain**, connecter son
-   contrôleur, puis refaire 7.2 → 7.5.
+Comme le splitter alimente les deux chaînes et que chaque axe a son propre
+accéléromètre de référence (canal NI dédié), le logiciel bascule d'axe en
+interne — **aucune manipulation physique entre V et H**.
 
-**Option B — campagne guidée :** cliquer **Campagne 2 axes (V puis H)**. Le
-logiciel étalonne l'axe courant, puis affiche une **fenêtre de confirmation**
-demandant de re-router le Wavetek / remonter le géophone / saisir le gain de
-l'autre axe avant de continuer (1 seul Wavetek → ces étapes restent manuelles).
+**Option A — manuelle :** cocher l'autre **Axe**, vérifier son **Gain APS 125**,
+puis refaire 7.2 → 7.5.
+
+**Option B — campagne automatique :** cliquer **Campagne 2 axes auto (V+H)**.
+Le logiciel étalonne V puis H d'affilée (centrage ZER + balayage par axe), sans
+intervention. Nécessite les **deux contrôleurs APS connectés** et les gains
+APS 125 des deux axes saisis.
+
+> ⚠️ Le Wavetek pilotant les deux shakers en parallèle, l'axe non mesuré vibre
+> aussi. C'est sans effet sur la mesure (on lit l'accéléromètre de l'axe
+> courant), mais assurez-vous que rien n'est en sur-course sur l'axe inactif.
 
 Les résultats des deux axes **coexistent** : les graphes **Balayage** et
 **Transfert banc** superposent V (bleu) et H (rouge). Une seule **Sauvegarde**

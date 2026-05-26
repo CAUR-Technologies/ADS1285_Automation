@@ -33,6 +33,8 @@ NI_DEVICE_NAME        = get("NI", "device_name")
 NI_AI_CHANNELS        = get("NI", "ai_channels")
 NI_SAMPLE_RATE        = int(get("NI", "sample_rate"))
 NI_SAMPLES_PER_CHANNEL = int(get("NI", "samples_per_channel"))
+NI_REF_CHANNEL_VERTICAL   = int(get("NI", "ref_channel_vertical"))
+NI_REF_CHANNEL_HORIZONTAL = int(get("NI", "ref_channel_horizontal"))
 
 # --- Banc shaker / calibration geophone ---
 SHAKER_STROKE_MM          = float(get("Shaker", "stroke_mm"))

@@ -16,12 +16,18 @@ Système automatisé de caractérisation de la réponse en fréquence de géopho
 
 ### Chaîne du signal
 ```
-Wavetek ──► [APS 0109 : Signal In] ──► [Signal Out + offset DC] ──► APS 125 ──► Shaker APS 113
-                                                                                    │
-                                              ┌─────────────────────────────────────┤
-                                       accéléromètre réf.                       géophone (DUT)
-                                       (NI USB-6221)                            (ADS1285 EVM)
+                 ┌─► [APS 0109 V] ─► APS 125 V ─► Shaker V ─► accéléro réf. V (NI ai0)
+Wavetek ─►splitter┤
+                 └─► [APS 0109 H] ─► APS 125 H ─► Shaker H ─► accéléro réf. H (NI ai1)
+                                                              géophone (DUT) ─► ADS1285 EVM
 ```
+- **2 chaînes indépendantes** (V/H), chacune : contrôleur APS 0109 + ampli
+  APS 125 + shaker APS 113 + accéléromètre de référence (canal NI dédié).
+- Le **splitter** alimente les deux chaînes avec **une amplitude commune** (le
+  Wavetek) ; chaque axe est dosé par le gain de son APS 125. Le servo d'amplitude
+  ne pilote qu'**un axe à la fois** (l'accéléromètre de référence de cet axe).
+- Pas de re-routage manuel : le logiciel bascule d'axe via le canal NI + le
+  contrôleur APS correspondants.
 
 ### Lecture du géophone — architecture bridge
 Le géophone est numérisé par une carte **ADS1285 EVM** de Texas Instruments,

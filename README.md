@@ -8,8 +8,10 @@ Ce projet automatise l'**étalonnage de géophones** pour l'Ambient Noise
 Tomography (ANT), via :
 - **ADC ADS1285 EVM** (Texas Instruments) — numérise le géophone testé (bridge 32-bit)
 - **Générateur Wavetek 39A** — source du signal d'excitation
-- **Table de vibration APS** (shaker APS 113 + contrôleur APS 0109 + ampli APS 125)
+- **Table de vibration APS** — 2 axes (V/H), chacun : shaker APS 113 + contrôleur
+  APS 0109 + ampli APS 125 ; Wavetek réparti aux deux chaînes par un **splitter**
 - **Accéléromètre de référence** Silicon Designs 2240-005 → NI USB-6221
+  (un par axe, canaux NI distincts)
 
 > 📖 **Opérateurs** : voir le mode d'emploi pas-à-pas
 > [`docs/GUIDE_UTILISATEUR.md`](docs/GUIDE_UTILISATEUR.md).
@@ -148,9 +150,9 @@ Adapter les **ports COM** selon votre matériel.
 | ADC (géophone) | Texas Instruments ADS1285 EVM | TCP/IP (bridge 32-bit) | `ADS1285` |
 | Générateur | Wavetek Model 39A | RS-232 (SCPI-like, CRLF) | `Wavetek39A` |
 | Contrôleur | APS 0109 (Spektra) | RS-232 custom, 19200, terminaison `\x00` | `APSController` |
-| Amplificateur | APS 125 | **manuel** (pas d'interface) — gain saisi/tracé | — |
-| Shaker | APS 113 (±38 mm, 133 N) | via APS 0109 | `shaker_physics` |
-| Accéléromètre réf. | Silicon Designs 2240-005 → NI USB-6221 | NI-DAQmx | `Accelerometer` |
+| Amplificateur | APS 125 (×2, V+H) | **manuel** (pas d'interface) — gain saisi/tracé | — |
+| Shaker | APS 113 (×2, ±38 mm, 133 N) | via APS 0109 | `shaker_physics` |
+| Accéléromètre réf. | Silicon Designs 2240-005 (×2, un/axe) → NI USB-6221 | NI-DAQmx | `Accelerometer` |
 
 ## 🔧 Développement
 

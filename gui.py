@@ -32,6 +32,7 @@ from config.settings import (
     APS_CONTROLLER_VERTICAL_PORT, APS_CONTROLLER_HORIZONTAL_PORT,
     APS125_GAIN_VERTICAL, APS125_GAIN_HORIZONTAL,
     NI_DEVICE_NAME, NI_AI_CHANNELS, NI_SAMPLE_RATE, NI_SAMPLES_PER_CHANNEL,
+    NI_REF_CHANNEL_VERTICAL, NI_REF_CHANNEL_HORIZONTAL,
     SHAKER_ENVELOPE_FRACTION, SHAKER_ACCEL_CAP_G, SHAKER_GEOPHONE,
     DATA_OUTPUT_DIR,
 )
@@ -218,7 +219,10 @@ class DeviceManager:
                                + ", ".join(missing))
 
         ads = self.instances.get("ads1285") if self.connected["ads1285"] else None
-        kw = {}
+        # Canal de l'accéléromètre de référence selon l'axe (un par axe)
+        ref_channel = (NI_REF_CHANNEL_VERTICAL if axis == "vertical"
+                       else NI_REF_CHANNEL_HORIZONTAL)
+        kw = {"ref_channel": ref_channel}
         if fraction is not None:
             kw["envelope_fraction"] = fraction
         if accel_cap_g is not None:
@@ -383,7 +387,7 @@ class Application(tk.Tk):
 
         bf4 = ttk.Frame(lf)
         bf4.pack(fill="x", padx=5, pady=(0, 3))
-        self._btn_campaign = ttk.Button(bf4, text="Campagne 2 axes (V puis H)",
+        self._btn_campaign = ttk.Button(bf4, text="Campagne 2 axes auto (V+H)",
                                         command=self._do_campaign)
         self._btn_campaign.pack(side="left")
 
@@ -1510,27 +1514,16 @@ class Application(tk.Tk):
         self._fig_lin.tight_layout()
         self._canvas_lin.draw_idle()
 
-    # ---- Campagne 2 axes (guidée) ----
-
-    def _confirm_blocking(self, title: str, message: str) -> bool:
-        """Affiche un askokcancel sur le thread principal et attend la réponse."""
-        evt = threading.Event()
-        holder = {"ok": False}
-
-        def ask():
-            holder["ok"] = messagebox.askokcancel(title, message)
-            evt.set()
-
-        self.after(0, ask)
-        evt.wait()
-        return holder["ok"]
+    # ---- Campagne 2 axes (automatique) ----
 
     def _do_campaign(self):
-        """Campagne guidée : étalonne l'axe courant puis l'autre, avec pause
-        de reconfiguration entre les deux (1 seul Wavetek, routage manuel)."""
-        active = self._vars["aps_axis"].get()
-        other = "horizontal" if active == "vertical" else "vertical"
-        axes = [active, other]
+        """Campagne 2 axes automatique : étalonne V puis H sans intervention.
+
+        Le splitter alimente les deux chaînes ; chaque axe a son accéléromètre
+        de référence (canal NI dédié) et son contrôleur APS. Le logiciel bascule
+        l'axe en interne — aucune manipulation physique entre les deux.
+        Nécessite les deux contrôleurs APS connectés.
+        """
         try:
             fraction = float(self._vars["cal_fraction"].get())
             cap = float(self._vars["cal_cap"].get())
@@ -1539,6 +1532,14 @@ class Application(tk.Tk):
         except ValueError:
             messagebox.showerror("Campagne", "Paramètres invalides.")
             return
+        # Pré-valider que les deux axes sont disponibles
+        try:
+            self._dm.make_testbench("vertical", fraction=fraction, accel_cap_g=cap)
+            self._dm.make_testbench("horizontal", fraction=fraction, accel_cap_g=cap)
+        except RuntimeError as e:
+            messagebox.showwarning("Campagne 2 axes", str(e))
+            return
+
         rate = int(self._vars["ads_rate"].get())
         count = int(self._vars["ads_count"].get())
         self._last_rate = rate
@@ -1551,25 +1552,12 @@ class Application(tk.Tk):
             self._on_aps_axis_change()
 
         def _worker():
-            for ax in axes:
+            for ax in ("vertical", "horizontal"):
                 if self._stop_event.is_set():
                     break
                 self.after(0, _set_axis_ui, ax)
-                if not self._confirm_blocking(
-                        f"Campagne — axe {ax}",
-                        f"Préparez l'axe {ax} :\n"
-                        f"• Routez le Wavetek vers la chaîne {ax}\n"
-                        f"• Montez/orientez le géophone\n"
-                        f"• Réglez et saisissez le gain APS 125 ({ax})\n\n"
-                        "OK pour étalonner cet axe, Annuler pour arrêter."):
-                    break
-                try:
-                    bench = self._dm.make_testbench(ax, fraction=fraction,
-                                                    accel_cap_g=cap)
-                except RuntimeError as e:
-                    self.after(0, messagebox.showwarning, "Campagne",
-                               f"Axe {ax} : {e}")
-                    continue
+                bench = self._dm.make_testbench(ax, fraction=fraction,
+                                                accel_cap_g=cap)
                 bench.set_stop_event(self._stop_event)
                 bench.set_logger(lambda m: self.after(0, self._set_status, m))
                 bench.center_zero()
@@ -1583,7 +1571,7 @@ class Application(tk.Tk):
 
         def _on_done(_):
             self._set_busy(False)
-            self._set_status("Campagne 2 axes terminée")
+            self._set_status("Campagne 2 axes terminée (V + H)")
 
         def _on_err(exc):
             self._set_busy(False)

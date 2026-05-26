@@ -105,11 +105,15 @@ class Accelerometer:
         )
         return np.array(data)
 
+    def _ref_idx(self, ref_channel):
+        return self._ref_channel if ref_channel is None else ref_channel
+
     def measure_acceleration_g(self,
                                freq_hz: float,
                                n_cycles: int = 5,
                                max_duration_s: float = 20.0,
-                               as_rms: bool = False) -> float:
+                               as_rms: bool = False,
+                               ref_channel: int | None = None) -> float:
         """
         Mesure l'amplitude d'accélération (g) à la fréquence d'excitation par
         détection cohérente (DFT mono-bin à freq_hz).
@@ -124,21 +128,27 @@ class Accelerometer:
         n_cycles : nombre de cycles à acquérir (fenêtre = n_cycles / freq)
         max_duration_s : durée d'acquisition maximale (borne le cas basse fréq.)
         as_rms : si True retourne l'amplitude RMS, sinon l'amplitude crête
+        ref_channel : index du canal de référence (défaut : self._ref_channel)
 
         Returns
         -------
         Accélération (g), crête par défaut.
         """
-        ref, fs = self.acquire_reference(freq_hz, n_cycles, max_duration_s)
+        ref, fs = self.acquire_reference(freq_hz, n_cycles, max_duration_s,
+                                         ref_channel)
         amp_peak_v = coherent_amplitude_peak(ref, freq_hz, fs)
         volts = amp_peak_v / np.sqrt(2.0) if as_rms else amp_peak_v
         return volts / self._sensitivity
 
     def acquire_reference(self, freq_hz: float,
                           n_cycles: int = 5,
-                          max_duration_s: float = 20.0):
+                          max_duration_s: float = 20.0,
+                          ref_channel: int | None = None):
         """
         Acquiert une fenêtre du canal de référence adaptée à freq_hz.
+
+        ref_channel : index du canal (un accéléromètre de référence par axe ;
+        défaut : self._ref_channel).
 
         Returns (signal_np, fs) — permet de calculer plusieurs métriques
         (g, SNR, THD) à partir d'une seule acquisition.
@@ -151,17 +161,20 @@ class Accelerometer:
         fs = int(min(max(freq_hz * 50.0, 200.0), 5000.0))
         samples = max(int(fs * duration), 64)
         data = self._acquire_window(fs, samples)
-        ref = data[self._ref_channel] if data.ndim == 2 else data
+        idx = self._ref_idx(ref_channel)
+        ref = data[idx] if data.ndim == 2 else data
         return np.asarray(ref, dtype=np.float64), fs
 
     def measure(self, freq_hz: float,
                 n_cycles: int = 5,
-                max_duration_s: float = 20.0) -> dict:
+                max_duration_s: float = 20.0,
+                ref_channel: int | None = None) -> dict:
         """
         Mesure complète à freq_hz en une acquisition : accélération (g),
-        SNR (dB) et THD (%).
+        SNR (dB) et THD (%). ref_channel sélectionne l'accéléromètre de l'axe.
         """
-        ref, fs = self.acquire_reference(freq_hz, n_cycles, max_duration_s)
+        ref, fs = self.acquire_reference(freq_hz, n_cycles, max_duration_s,
+                                         ref_channel)
         amp_peak_v = coherent_amplitude_peak(ref, freq_hz, fs)
         return {
             "accel_g": amp_peak_v / self._sensitivity,
@@ -170,14 +183,16 @@ class Accelerometer:
             "fs": fs,
         }
 
-    def measure_noise_floor(self, duration_s: float = 5.0) -> float:
+    def measure_noise_floor(self, duration_s: float = 5.0,
+                            ref_channel: int | None = None) -> float:
         """
         Plancher de bruit : RMS du canal de référence (g), shaker arrêté.
         """
         fs = self._sample_rate
         samples = max(int(fs * duration_s), 64)
         data = self._acquire_window(fs, samples)
-        ref = data[self._ref_channel] if data.ndim == 2 else data
+        idx = self._ref_idx(ref_channel)
+        ref = data[idx] if data.ndim == 2 else data
         return rms(ref) / self._sensitivity
 
     @property

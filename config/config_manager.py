@@ -54,6 +54,10 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "ai_channels":        "ai0,ai1",
         "sample_rate":        "10000",
         "samples_per_channel": "1000",
+        # Index (dans ai_channels) de l'accelerometre de reference par axe :
+        # un accelero par axe (ex. ai0=V -> 0, ai1=H -> 1).
+        "ref_channel_vertical":   "0",
+        "ref_channel_horizontal": "1",
     },
     "Shaker": {
         # APS 113 : demi-course mecanique +/-38 mm

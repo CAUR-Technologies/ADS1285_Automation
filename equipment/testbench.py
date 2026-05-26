@@ -59,11 +59,13 @@ class TestBench:
                  servo_tolerance: float = SHAKER_SERVO_TOLERANCE,
                  servo_max_iter: int = SHAKER_SERVO_MAX_ITER,
                  servo_start_vpp: float = SHAKER_SERVO_START_VPP,
-                 vpp_max: float = 5.0):
+                 vpp_max: float = 5.0,
+                 ref_channel: int = 0):
         self._wav = wavetek
         self._aps = aps
         self._accel = accelerometer
         self._ads = ads1285
+        self._ref_channel = ref_channel   # canal accéléro de réf. pour cet axe
 
         self._stroke = stroke_mm
         self._fraction = envelope_fraction
@@ -204,7 +206,8 @@ class TestBench:
             self._wav.set_amplitude(vpp)
             time.sleep(self._settle_s)
             self._check_overtravel()
-            measured = self._accel.measure_acceleration_g(freq_hz)
+            measured = self._accel.measure_acceleration_g(
+                freq_hz, ref_channel=self._ref_channel)
             if measured <= 1e-9:
                 self._log(f"[banc]   iter{i}: aucun signal, Vpp {vpp:.4f}→{vpp*2:.4f}")
                 vpp *= 2.0
@@ -281,7 +284,8 @@ class TestBench:
         """
         self._log(f"[banc] plancher de bruit ({duration_s:.0f}s, shaker arrêté)…")
         self._safe_shutdown()
-        floor = self._accel.measure_noise_floor(duration_s)
+        floor = self._accel.measure_noise_floor(duration_s,
+                                                ref_channel=self._ref_channel)
         self._noise_floor_g = floor
         self._log(f"[banc] plancher de bruit = {floor:.6g} g RMS")
         return floor
@@ -304,7 +308,7 @@ class TestBench:
                 self._check_stop()
                 res = self.set_frequency_safe(freq)
                 if not res["skipped"]:
-                    m = self._accel.measure(freq)
+                    m = self._accel.measure(freq, ref_channel=self._ref_channel)
                     res["measured_g"] = m["accel_g"]
                     res["snr_db"] = m["snr_db"]
                     res["thd_percent"] = m["thd_percent"]
@@ -357,7 +361,7 @@ class TestBench:
                           "measured_g": res.get("measured_g", 0.0),
                           "sensitivity_counts_per_g": 0.0}
                     if not res["skipped"]:
-                        m = self._accel.measure(freq)
+                        m = self._accel.measure(freq, ref_channel=self._ref_channel)
                         pt["measured_g"] = m["accel_g"]
                         if self._ads is not None and m["accel_g"] > 1e-9:
                             samples = self._ads.acquire(geophone_count, geophone_rate)
@@ -398,7 +402,7 @@ class TestBench:
                 self._check_stop()
                 res = self.set_frequency_safe(freq)
                 if not res["skipped"]:
-                    m = self._accel.measure(freq)
+                    m = self._accel.measure(freq, ref_channel=self._ref_channel)
                     h = m["accel_g"] / res["vpp"] if res["vpp"] > 1e-9 else 0.0
                     ref = reference.get(freq, reference.get(str(freq)))
                     dev = ratio_db(h, ref) if ref else float("nan")
@@ -447,7 +451,7 @@ class TestBench:
 
                 if not res["skipped"]:
                     # Mesure de référence enrichie (g + SNR + THD) en une acquisition
-                    m = self._accel.measure(freq)
+                    m = self._accel.measure(freq, ref_channel=self._ref_channel)
                     res["measured_g"] = m["accel_g"]
                     res["snr_db"] = m["snr_db"]
                     res["thd_percent"] = m["thd_percent"]
