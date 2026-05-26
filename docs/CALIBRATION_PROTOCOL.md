@@ -63,7 +63,11 @@ Si écart > `CAL_DAILY_TOL_DB` = 0,5 dB vs étalonnage de référence
 | Enveloppe / stiffness / ZER | `aps/shaker_physics.py`, `testbench.py` | ✅ |
 | Servo amplitude boucle fermée | `testbench.py` | ✅ |
 | Détection cohérente (amplitude) | `dsp.py` | ✅ |
-| `H_banc(f)` (transfert banc) | `testbench.py` | 🚧 en cours |
-| Plancher de bruit / SNR | `dsp.py`, `testbench.py` | 🚧 en cours |
-| THD | `dsp.py` | 🚧 en cours |
-| Linéarité / cross-axis | `testbench.py` | ⬜ à faire |
+| `H_banc(f)` (transfert banc) | `testbench.py` | ✅ |
+| Plancher de bruit / SNR | `dsp.py`, `testbench.py` | ✅ |
+| THD | `dsp.py` | ✅ |
+| Sensibilité géophone (sweep) | `testbench.py`, `gui.py` | ✅ |
+| Linéarité (3 niveaux × N fréq.) | `testbench.py`, `gui.py` | ✅ |
+| Vérification quotidienne (vs réf.) | `testbench.py`, `gui.py` | ✅ |
+| Campagne 2 axes (guidée) | `gui.py` | ✅ |
+| Sensibilité transversale (cross-axis) | — | ⬜ à faire |

@@ -80,7 +80,12 @@ Section **Calibration banc** (panneau gauche) + barre d'actions.
 | 7.3 | **Plancher bruit** (champ « Bruit (s) », défaut 60) | bruit de fond, shaker arrêté |
 | 7.4 | **Transfert banc (H_banc)** | caractérise le banc : `H_banc(f)=a/V` [g/V] |
 | 7.5 | **Balayage** | mesure la **sensibilité du géophone** (counts/g) |
-| 7.6 | **Sauvegarder** | export CSV ou NPZ |
+| 7.6 | **Linéarité** (optionnel) | sensibilité à 3 niveaux × N fréq. (onglet Linéarité), tolérance 1 dB |
+| 7.7 | **Sauvegarder** | export CSV ou NPZ |
+
+**Définir une référence** (pour la vérification quotidienne) : après un bon
+**Transfert banc**, cliquer **Définir réf.** — le H_banc de l'axe est enregistré
+dans `reference/h_banc_<axe>.json`.
 
 Réglages communs (avant 7.4/7.5) :
 - **Fréquences** (barre d'actions) : liste séparée par virgules, ex. `0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100`
@@ -96,15 +101,28 @@ stiffness appliquée, déplacement, marge de sécurité (ou SNR/THD pour H_banc)
 
 ## 8. Étalonner le second axe
 
+**Option A — manuelle :**
 1. Couper la sortie, **router le Wavetek** vers l'autre chaîne, remonter le
    géophone sur l'autre shaker.
 2. Régler/noter les **knobs APS 125** de cet axe.
 3. Dans le GUI : cocher l'autre **Axe**, saisir son **Gain**, connecter son
    contrôleur, puis refaire 7.2 → 7.5.
 
+**Option B — campagne guidée :** cliquer **Campagne 2 axes (V puis H)**. Le
+logiciel étalonne l'axe courant, puis affiche une **fenêtre de confirmation**
+demandant de re-router le Wavetek / remonter le géophone / saisir le gain de
+l'autre axe avant de continuer (1 seul Wavetek → ces étapes restent manuelles).
+
 Les résultats des deux axes **coexistent** : les graphes **Balayage** et
 **Transfert banc** superposent V (bleu) et H (rouge). Une seule **Sauvegarde**
 contient les deux axes.
+
+## 8 bis. Vérification quotidienne
+
+Avant une journée de mesures, sur chaque axe ayant une référence : cliquer
+**Vérif. quotid.** Le logiciel mesure H_banc à 1/10/50 Hz et compare à la
+référence. Si l'écart max dépasse **0,5 dB**, une alerte demande de refaire
+l'étalonnage complet du banc.
 
 ## 9. Lire les résultats
 
@@ -119,20 +137,14 @@ thd_percent, geophone_counts_peak, sensitivity_counts_per_g, skipped, note`.
 **Fichier NPZ** : `geophone`, `aps125_gain_vertical/horizontal`, et par axe
 `vertical_sweep_*`, `horizontal_sweep_*`, `*_hbench_freq`, `*_hbench_g_per_v`.
 
-## 10. Vérification quotidienne
-
-Avant une journée de mesures : lancer un **Transfert banc** réduit à
-**1, 10, 50 Hz**. Si l'écart avec l'étalonnage de référence dépasse **0,5 dB**,
-refaire l'étalonnage complet du banc (étapes 7.3–7.4).
-
-## 11. Quand refaire l'étalonnage complet du banc
+## 10. Quand refaire l'étalonnage complet du banc
 
 - Knobs de l'APS 125 modifiés
 - Accéléromètre de référence remplacé
 - Banc déplacé physiquement
 - Écart > 1 dB lors d'une vérification
 
-## 12. Dépannage
+## 11. Dépannage
 
 | Symptôme | Cause probable / solution |
 |---|---|
