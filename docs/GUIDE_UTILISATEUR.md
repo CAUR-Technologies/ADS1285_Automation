@@ -126,6 +126,18 @@ Les résultats des deux axes **coexistent** : les graphes **Balayage** et
 **Transfert banc** superposent V (bleu) et H (rouge). Une seule **Sauvegarde**
 contient les deux axes.
 
+## 8 ter. Sensibilité transversale (cross-axis)
+
+Cliquer **Transversale (cross-axis)**. Le logiciel :
+1. excite **le long** de l'axe sensible (géophone sur le shaker de son axe) et
+   mesure `S_main` ;
+2. affiche une **pause** : remonter le géophone sur l'autre shaker, **axe sensible
+   perpendiculaire** au mouvement ;
+3. excite **perpendiculairement** et mesure `S_trans`.
+
+Résultat : `S_trans / S_main × 100` (%) vs fréquence (onglet **Transversale**),
+seuil **5 %**. L'axe non excité est mis au silence automatiquement (STP).
+
 ## 8 bis. Vérification quotidienne
 
 Avant une journée de mesures, sur chaque axe ayant une référence : cliquer

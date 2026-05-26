@@ -27,7 +27,11 @@ Wavetek nécessaire (feed-forward) en plus du servo en boucle fermée.
    plafond 1 g) → stiffness adaptée → servo amplitude → mesure `a_table`.
 3. **Linéarité** — 3 niveaux × 5 fréquences ; écart max `CAL_LINEARITY_MAX_DB` = 1 dB.
 4. **THD** — distorsion harmonique totale, seuil max `CAL_THD_MAX_PERCENT` = 3 %.
-5. **Sensibilité transversale** — seuil max `CAL_CROSS_AXIS_MAX_PCT` = 5 %.
+5. **Sensibilité transversale** (cross-axis) — seuil max `CAL_CROSS_AXIS_MAX_PCT`
+   = 5 %. Deux phases : excitation **le long** de l'axe sensible (`S_main`), puis
+   **perpendiculaire** après remontage du géophone (`S_trans`) ; transversale =
+   `S_trans / S_main × 100`. L'axe non excité est muté par `STP` du contrôleur
+   (coupe l'AC) ; chaque phase lit l'accéléromètre de référence de son axe.
 
 ## Contraintes physiques (rappel)
 
@@ -69,5 +73,5 @@ Si écart > `CAL_DAILY_TOL_DB` = 0,5 dB vs étalonnage de référence
 | Sensibilité géophone (sweep) | `testbench.py`, `gui.py` | ✅ |
 | Linéarité (3 niveaux × N fréq.) | `testbench.py`, `gui.py` | ✅ |
 | Vérification quotidienne (vs réf.) | `testbench.py`, `gui.py` | ✅ |
-| Campagne 2 axes (guidée) | `gui.py` | ✅ |
-| Sensibilité transversale (cross-axis) | — | ⬜ à faire |
+| Campagne 2 axes (automatique) | `gui.py` | ✅ |
+| Sensibilité transversale (cross-axis) | `gui.py` | ✅ |

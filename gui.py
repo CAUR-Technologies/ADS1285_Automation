@@ -36,7 +36,7 @@ from config.settings import (
     SHAKER_ENVELOPE_FRACTION, SHAKER_ACCEL_CAP_G, SHAKER_GEOPHONE,
     DATA_OUTPUT_DIR,
 )
-from constants import CAL_DAILY_FREQS_HZ, CAL_DAILY_TOL_DB
+from constants import CAL_DAILY_FREQS_HZ, CAL_DAILY_TOL_DB, CAL_CROSS_AXIS_MAX_PCT
 from equipment.ads1285 import ADS1285
 from equipment.wavetek import Wavetek39A
 from equipment.aps import APSController
@@ -287,6 +287,7 @@ class Application(tk.Tk):
         self._sweep_results = {"vertical": {}, "horizontal": {}}  # {axe: {freq: res}}
         self._bench_results = {"vertical": {}, "horizontal": {}}  # {axe: {freq: res}}
         self._linearity_results = {"vertical": [], "horizontal": []}  # {axe: [entry]}
+        self._cross_results = {}       # {freq: entry} sensibilité transversale
         # Valeurs des knobs APS 125 saisies par l'usager (ampli manuel, par axe)
         self._aps125_gains = {"vertical": "", "horizontal": ""}
 
@@ -390,6 +391,12 @@ class Application(tk.Tk):
         self._btn_campaign = ttk.Button(bf4, text="Campagne 2 axes auto (V+H)",
                                         command=self._do_campaign)
         self._btn_campaign.pack(side="left")
+
+        bf5 = ttk.Frame(lf)
+        bf5.pack(fill="x", padx=5, pady=(0, 3))
+        self._btn_cross = ttk.Button(bf5, text="Transversale (cross-axis)",
+                                     command=self._do_cross_axis)
+        self._btn_cross.pack(side="left")
 
         self._lbl_noise_floor = ttk.Label(lf, text="", font=("", 8))
         self._lbl_noise_floor.pack(anchor="w", padx=6)
@@ -684,6 +691,22 @@ class Application(tk.Tk):
         self._toolbar_lin = NavigationToolbar2Tk(self._canvas_lin, tab_lin)
         self._toolbar_lin.update()
 
+        # Onglet Transversale (sensibilité transverse)
+        tab_cross = ttk.Frame(self._notebook)
+        self._notebook.add(tab_cross, text="  Transversale  ")
+        self._fig_cross = Figure(figsize=(8, 5), dpi=100)
+        self._ax_cross = self._fig_cross.add_subplot(111)
+        self._ax_cross.set_title("Sensibilite transversale vs frequence")
+        self._ax_cross.set_xlabel("Frequence (Hz)")
+        self._ax_cross.set_ylabel("Transversale (%)")
+        self._ax_cross.set_xscale("log")
+        self._ax_cross.grid(True, which="both", linestyle="--", alpha=0.5)
+        self._fig_cross.tight_layout()
+        self._canvas_cross = FigureCanvasTkAgg(self._fig_cross, master=tab_cross)
+        self._canvas_cross.get_tk_widget().pack(fill="both", expand=True)
+        self._toolbar_cross = NavigationToolbar2Tk(self._canvas_cross, tab_cross)
+        self._toolbar_cross.update()
+
     # ---------------------------------------------------------------
     # Barre d'actions
     # ---------------------------------------------------------------
@@ -765,7 +788,8 @@ class Application(tk.Tk):
         for btn in (self._btn_connect_all, self._btn_acquire,
                     self._btn_sweep, self._btn_save, self._btn_cal_zero,
                     self._btn_noise, self._btn_bench, self._btn_set_ref,
-                    self._btn_linearity, self._btn_daily, self._btn_campaign):
+                    self._btn_linearity, self._btn_daily, self._btn_campaign,
+                    self._btn_cross):
             btn.configure(state=state)
         self._btn_stop.configure(state="normal" if (busy and allow_stop)
                                   else "disabled")
@@ -1582,6 +1606,139 @@ class Application(tk.Tk):
 
         WorkerThread(self, _worker, _on_done, _on_err).start()
 
+    # ---- Sensibilité transversale (cross-axis) ----
+
+    def _confirm_blocking(self, title: str, message: str) -> bool:
+        """Affiche un askokcancel sur le thread principal et attend la réponse
+        (appelé depuis un thread worker)."""
+        evt = threading.Event()
+        holder = {"ok": False}
+
+        def ask():
+            holder["ok"] = messagebox.askokcancel(title, message)
+            evt.set()
+
+        self.after(0, ask)
+        evt.wait()
+        return holder["ok"]
+
+    def _do_cross_axis(self):
+        """Sensibilité transversale en 2 phases : excitation le long de l'axe
+        sensible, puis perpendiculaire (remontage du géophone). Mute l'axe
+        non excité par STP du contrôleur."""
+        main_axis = self._vars["aps_axis"].get()
+        trans_axis = "horizontal" if main_axis == "vertical" else "vertical"
+        if not self._dm.connected["ads1285"]:
+            messagebox.showwarning("Transversale", "ADS1285 (géophone) requis.")
+            return
+        try:
+            fraction = float(self._vars["cal_fraction"].get())
+            cap = float(self._vars["cal_cap"].get())
+            freqs = [float(f.strip())
+                     for f in self._vars["sweep_freqs"].get().split(",")]
+            bench_main = self._dm.make_testbench(main_axis, fraction=fraction,
+                                                 accel_cap_g=cap)
+            bench_trans = self._dm.make_testbench(trans_axis, fraction=fraction,
+                                                  accel_cap_g=cap)
+        except (ValueError, RuntimeError) as e:
+            messagebox.showwarning("Transversale", str(e))
+            return
+
+        rate = int(self._vars["ads_rate"].get())
+        count = int(self._vars["ads_count"].get())
+        self._last_rate = rate
+        self._cross_results = {}
+        self._stop_event.clear()
+        self._set_busy(True, allow_stop=True)
+        self._notebook.select(5)  # onglet Transversale
+
+        ctrl_key = lambda a: "aps_ctrl_v" if a == "vertical" else "aps_ctrl_h"
+        main_ctrl = self._dm.instances[ctrl_key(main_axis)]
+        trans_ctrl = self._dm.instances[ctrl_key(trans_axis)]
+
+        def _sweep_sens(bench, mute_ctrl, label):
+            self.after(0, self._set_status, f"Transversale — {label}")
+            try:
+                mute_ctrl.stop()         # STP : coupe l'AC de l'axe non mesuré
+            except Exception:
+                pass
+            bench.set_stop_event(self._stop_event)
+            bench.set_logger(lambda m: self.after(0, self._set_status, m))
+            bench.center_zero()
+            self.after(0, lambda n=len(freqs): self._progress.configure(
+                mode="determinate", maximum=n, value=0))
+            res = bench.calibration_sweep(freqs, geophone_count=count,
+                                          geophone_rate=rate, on_point=lambda r: None)
+            return {r["freq_hz"]: r.get("sensitivity_counts_per_g", 0.0)
+                    for r in res if not r.get("skipped")}
+
+        def _worker():
+            # Phase 1 : excitation le long de l'axe sensible
+            s_main = _sweep_sens(bench_main, trans_ctrl,
+                                 f"phase 1 — axe principal {main_axis}")
+            if self._stop_event.is_set():
+                return None
+            # Pause : remontage perpendiculaire
+            if not self._confirm_blocking(
+                    "Transversale — remontage",
+                    f"Remontez le géophone sur le shaker {trans_axis},\n"
+                    f"axe sensible PERPENDICULAIRE au mouvement.\n\n"
+                    "OK pour mesurer la réponse transverse, Annuler pour arrêter."):
+                return None
+            # Phase 2 : excitation perpendiculaire
+            s_trans = _sweep_sens(bench_trans, main_ctrl,
+                                  f"phase 2 — axe transverse {trans_axis}")
+            # Combinaison
+            for f in sorted(set(s_main) & set(s_trans)):
+                sm, st = s_main[f], s_trans[f]
+                pct = (st / sm * 100.0) if sm > 1e-12 else 0.0
+                entry = {"freq_hz": f, "s_main": sm, "s_trans": st,
+                         "cross_axis_pct": pct,
+                         "pass": pct <= CAL_CROSS_AXIS_MAX_PCT}
+                self._cross_results[f] = entry
+                self.after(0, self._on_cross_point, entry)
+            return None
+
+        def _on_done(_):
+            self._set_busy(False)
+            if self._cross_results:
+                worst = max(e["cross_axis_pct"] for e in self._cross_results.values())
+                ok = worst <= CAL_CROSS_AXIS_MAX_PCT
+                self._set_status(f"Transversale : max {worst:.2f}% — "
+                                 + ("OK" if ok else "HORS TOL"))
+            else:
+                self._set_status("Transversale : aucun point exploitable")
+
+        def _on_err(exc):
+            self._set_busy(False)
+            if isinstance(exc, TestBenchAborted):
+                self._set_status("Transversale interrompue (sécurité)")
+            else:
+                self._on_error(exc)
+
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
+    def _on_cross_point(self, entry: dict):
+        self._set_status(
+            f"{entry['freq_hz']} Hz : transversale {entry['cross_axis_pct']:.2f}% "
+            f"({'OK' if entry['pass'] else 'HORS TOL'})")
+        freqs_done = sorted(self._cross_results.keys())
+        self._ax_cross.clear()
+        self._ax_cross.set_title("Sensibilite transversale vs frequence")
+        self._ax_cross.set_xlabel("Frequence (Hz)")
+        self._ax_cross.set_ylabel("Transversale (%)")
+        self._ax_cross.set_xscale("log")
+        self._ax_cross.grid(True, which="both", linestyle="--", alpha=0.5)
+        if freqs_done:
+            pct = [self._cross_results[f]["cross_axis_pct"] for f in freqs_done]
+            self._ax_cross.plot(freqs_done, pct, "o-", color="tab:purple")
+            self._ax_cross.axhline(CAL_CROSS_AXIS_MAX_PCT, color="red",
+                                   linestyle="--", alpha=0.7,
+                                   label=f"seuil {CAL_CROSS_AXIS_MAX_PCT}%")
+            self._ax_cross.legend()
+        self._fig_cross.tight_layout()
+        self._canvas_cross.draw_idle()
+
     def _do_stop(self):
         self._stop_event.set()
         self._set_status("Arret demande...")
@@ -1772,6 +1929,13 @@ class Application(tk.Tk):
                 [e["freq_hz"] for e in entries], dtype=np.float64)
             save_dict[f"{ax_name}_linearity_error_db"] = np.array(
                 [e["linearity_error_db"] for e in entries], dtype=np.float64)
+        # Sensibilité transversale (cross-axis)
+        if self._cross_results:
+            cf = sorted(self._cross_results.keys())
+            save_dict["cross_axis_freq"] = np.array(cf, dtype=np.float64)
+            save_dict["cross_axis_pct"] = np.array(
+                [self._cross_results[f]["cross_axis_pct"] for f in cf],
+                dtype=np.float64)
         np.savez(path, **save_dict)
 
     # ===================================================================
