@@ -21,7 +21,8 @@ coupe la sortie du Wavetek et lève TestBenchAborted.
 import time
 
 from equipment.aps import shaker_physics as sp
-from equipment.dsp import coherent_amplitude_peak
+from equipment.dsp import coherent_amplitude_peak, ratio_db, linearity_error_db
+from constants import CAL_LINEARITY_MAX_DB, CAL_DAILY_TOL_DB, CAL_DAILY_FREQS_HZ
 from config.settings import (
     SHAKER_STROKE_MM,
     SHAKER_ENVELOPE_FRACTION,
@@ -324,6 +325,95 @@ class TestBench:
     def bench_transfer(self) -> dict:
         """Retourne la dernière fonction de transfert du banc {freq: g/V}."""
         return dict(self._h_bench)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Linéarité (3 niveaux × N fréquences)
+    # ──────────────────────────────────────────────────────────────────
+
+    def measure_linearity(self, freqs, levels=(0.25, 0.5, 1.0),
+                          geophone_count: int = 1024,
+                          geophone_rate: int = 1000,
+                          on_point=None) -> list[dict]:
+        """
+        Linéarité : à chaque fréquence, mesure la sensibilité géophone à
+        plusieurs niveaux d'amplitude (fractions de la cible). L'erreur de
+        linéarité = 20·log10(max/min) des sensibilités ; tolérance
+        CAL_LINEARITY_MAX_DB. Requiert l'ADS1285 (géophone).
+
+        Returns une liste de dicts {freq_hz, levels:[...], linearity_error_db, pass}.
+        Lève TestBenchAborted sur overtravel / arrêt.
+        """
+        results = []
+        try:
+            for freq in freqs:
+                self._check_stop()
+                base = self.target_accel_g(freq)
+                per_level = []
+                for lvl in levels:
+                    self._check_stop()
+                    res = self.set_frequency_safe(freq, base * lvl)
+                    pt = {"freq_hz": freq, "level": lvl, "target_g": base * lvl,
+                          "skipped": res["skipped"], "note": res.get("note", ""),
+                          "measured_g": res.get("measured_g", 0.0),
+                          "sensitivity_counts_per_g": 0.0}
+                    if not res["skipped"]:
+                        m = self._accel.measure(freq)
+                        pt["measured_g"] = m["accel_g"]
+                        if self._ads is not None and m["accel_g"] > 1e-9:
+                            samples = self._ads.acquire(geophone_count, geophone_rate)
+                            amp = coherent_amplitude_peak(samples, freq, geophone_rate)
+                            pt["sensitivity_counts_per_g"] = amp / m["accel_g"]
+                    per_level.append(pt)
+                err = linearity_error_db([p["sensitivity_counts_per_g"]
+                                          for p in per_level])
+                entry = {"freq_hz": freq, "levels": per_level,
+                         "linearity_error_db": err,
+                         "pass": err <= CAL_LINEARITY_MAX_DB}
+                results.append(entry)
+                self._log(f"[banc] linéarité {freq} Hz : {err:.2f} dB "
+                          f"({'OK' if entry['pass'] else 'HORS TOL'})")
+                if on_point is not None:
+                    on_point(entry)
+        finally:
+            self._safe_shutdown()
+        return results
+
+    # ──────────────────────────────────────────────────────────────────
+    # Vérification quotidienne (H_banc vs référence à 1/10/50 Hz)
+    # ──────────────────────────────────────────────────────────────────
+
+    def daily_verification(self, reference: dict, freqs=None,
+                           on_point=None) -> list[dict]:
+        """
+        Mesure H_banc aux fréquences de contrôle et compare à une référence
+        {freq: g/V}. Écart en dB par fréquence ; dérive si |écart| > CAL_DAILY_TOL_DB.
+
+        reference : dict avec clés float ou str (tolérant aux deux).
+        """
+        if freqs is None:
+            freqs = list(CAL_DAILY_FREQS_HZ)
+        results = []
+        try:
+            for freq in freqs:
+                self._check_stop()
+                res = self.set_frequency_safe(freq)
+                if not res["skipped"]:
+                    m = self._accel.measure(freq)
+                    h = m["accel_g"] / res["vpp"] if res["vpp"] > 1e-9 else 0.0
+                    ref = reference.get(freq, reference.get(str(freq)))
+                    dev = ratio_db(h, ref) if ref else float("nan")
+                    res["h_bench_g_per_v"] = h
+                    res["h_bench_ref"] = ref
+                    res["deviation_db"] = dev
+                    res["pass"] = (ref is not None and abs(dev) <= CAL_DAILY_TOL_DB)
+                    self._log(f"[banc] vérif {freq} Hz : {dev:+.2f} dB vs réf "
+                              f"({'OK' if res['pass'] else 'DERIVE'})")
+                results.append(res)
+                if on_point is not None:
+                    on_point(res)
+        finally:
+            self._safe_shutdown()
+        return results
 
     # ──────────────────────────────────────────────────────────────────
     # Étape 2 : sweep de calibration géophone

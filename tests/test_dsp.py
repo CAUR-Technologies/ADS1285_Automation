@@ -78,6 +78,22 @@ def test_thd():
     assert dsp.thd_percent(pur, f, fs) < 0.5
 
 
+def test_ratio_db():
+    assert approx(dsp.ratio_db(2.0, 1.0), 6.0206, tol=1e-3)   # x2 -> +6 dB
+    assert approx(dsp.ratio_db(1.0, 1.0), 0.0, tol=1e-9)
+    assert dsp.ratio_db(0.0, 1.0) == float("-inf")
+
+
+def test_linearity_error_db():
+    # sensibilités quasi constantes -> erreur faible
+    assert dsp.linearity_error_db([100.0, 101.0, 99.5]) < 0.2
+    # facteur 2 d'écart -> ~6 dB
+    assert approx(dsp.linearity_error_db([100.0, 200.0]), 6.0206, tol=1e-3)
+    # cas dégénéré
+    assert dsp.linearity_error_db([100.0]) == 0.0
+    assert dsp.linearity_error_db([]) == 0.0
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

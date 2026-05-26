@@ -59,6 +59,24 @@ def snr_db(signal, freq_hz: float, fs: float) -> float:
     return float(10.0 * np.log10(p_sig / p_noise))
 
 
+def ratio_db(measured: float, reference: float) -> float:
+    """Écart en dB entre deux grandeurs : 20·log10(measured/reference)."""
+    if reference == 0 or measured <= 0:
+        return float("-inf") if measured <= 0 else float("inf")
+    return float(20.0 * np.log10(measured / reference))
+
+
+def linearity_error_db(values) -> float:
+    """
+    Erreur de linéarité (dB) sur un jeu de sensibilités mesurées à différents
+    niveaux d'amplitude : 20·log10(max/min). 0 = parfaitement linéaire.
+    """
+    vals = [v for v in values if v and v > 0]
+    if len(vals) < 2:
+        return 0.0
+    return float(20.0 * np.log10(max(vals) / min(vals)))
+
+
 def thd_percent(signal, freq_hz: float, fs: float, n_harmonics: int = 5) -> float:
     """
     Distorsion harmonique totale (%) : sqrt(Σ A_k²) / A_1 × 100, k=2..n.
