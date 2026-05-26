@@ -12,6 +12,7 @@ Usage :
 import os
 import sys
 import time
+import json
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -34,10 +35,14 @@ from config.settings import (
     SHAKER_ENVELOPE_FRACTION, SHAKER_ACCEL_CAP_G, SHAKER_GEOPHONE,
     DATA_OUTPUT_DIR,
 )
+from constants import CAL_DAILY_FREQS_HZ, CAL_DAILY_TOL_DB
 from equipment.ads1285 import ADS1285
 from equipment.wavetek import Wavetek39A
 from equipment.aps import APSController
 from equipment.testbench import TestBench, TestBenchAborted
+
+# Dossier des references H_banc (vérification quotidienne)
+_REF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference")
 try:
     from equipment.accelerometer import Accelerometer
     _HAS_NIDAQMX = True
@@ -277,6 +282,7 @@ class Application(tk.Tk):
         # Resultats stockes PAR AXE (2 chaines shaker independantes V/H)
         self._sweep_results = {"vertical": {}, "horizontal": {}}  # {axe: {freq: res}}
         self._bench_results = {"vertical": {}, "horizontal": {}}  # {axe: {freq: res}}
+        self._linearity_results = {"vertical": [], "horizontal": []}  # {axe: [entry]}
         # Valeurs des knobs APS 125 saisies par l'usager (ampli manuel, par axe)
         self._aps125_gains = {"vertical": "", "horizontal": ""}
 
@@ -359,13 +365,31 @@ class Application(tk.Tk):
 
         bf2 = ttk.Frame(lf)
         bf2.pack(fill="x", padx=5, pady=(0, 3))
-        self._btn_bench = ttk.Button(bf2, text="Transfert banc (H_banc)",
+        self._btn_bench = ttk.Button(bf2, text="Transfert banc", width=12,
                                      command=self._measure_bench_transfer)
-        self._btn_bench.pack(side="left")
+        self._btn_bench.pack(side="left", padx=(0, 4))
+        self._btn_set_ref = ttk.Button(bf2, text="Définir réf.", width=13,
+                                       command=self._set_reference_hbanc)
+        self._btn_set_ref.pack(side="left")
+
+        bf3 = ttk.Frame(lf)
+        bf3.pack(fill="x", padx=5, pady=(0, 3))
+        self._btn_linearity = ttk.Button(bf3, text="Linéarité", width=12,
+                                         command=self._do_linearity)
+        self._btn_linearity.pack(side="left", padx=(0, 4))
+        self._btn_daily = ttk.Button(bf3, text="Vérif. quotid.", width=13,
+                                     command=self._do_daily_verification)
+        self._btn_daily.pack(side="left")
+
+        bf4 = ttk.Frame(lf)
+        bf4.pack(fill="x", padx=5, pady=(0, 3))
+        self._btn_campaign = ttk.Button(bf4, text="Campagne 2 axes (V puis H)",
+                                        command=self._do_campaign)
+        self._btn_campaign.pack(side="left")
 
         self._lbl_noise_floor = ttk.Label(lf, text="", font=("", 8))
         self._lbl_noise_floor.pack(anchor="w", padx=6)
-        ttk.Label(lf, text="(Balayage = sweep calibration géophone)",
+        ttk.Label(lf, text="(Balayage = sweep calibration géophone, axe courant)",
                   font=("", 8)).pack(anchor="w", padx=6, pady=(0, 4))
 
     def _make_var(self, key, default=""):
@@ -641,6 +665,21 @@ class Application(tk.Tk):
         self._toolbar_bench = NavigationToolbar2Tk(self._canvas_bench, tab_bench)
         self._toolbar_bench.update()
 
+        # Onglet Linéarité
+        tab_lin = ttk.Frame(self._notebook)
+        self._notebook.add(tab_lin, text="  Linéarité  ")
+        self._fig_lin = Figure(figsize=(8, 5), dpi=100)
+        self._ax_lin = self._fig_lin.add_subplot(111)
+        self._ax_lin.set_title("Linearite — sensibilite vs niveau d'excitation")
+        self._ax_lin.set_xlabel("Acceleration excitation (g)")
+        self._ax_lin.set_ylabel("Sensibilite (counts/g)")
+        self._ax_lin.grid(True, linestyle="--", alpha=0.5)
+        self._fig_lin.tight_layout()
+        self._canvas_lin = FigureCanvasTkAgg(self._fig_lin, master=tab_lin)
+        self._canvas_lin.get_tk_widget().pack(fill="both", expand=True)
+        self._toolbar_lin = NavigationToolbar2Tk(self._canvas_lin, tab_lin)
+        self._toolbar_lin.update()
+
     # ---------------------------------------------------------------
     # Barre d'actions
     # ---------------------------------------------------------------
@@ -721,7 +760,8 @@ class Application(tk.Tk):
         state = "disabled" if busy else "normal"
         for btn in (self._btn_connect_all, self._btn_acquire,
                     self._btn_sweep, self._btn_save, self._btn_cal_zero,
-                    self._btn_noise, self._btn_bench):
+                    self._btn_noise, self._btn_bench, self._btn_set_ref,
+                    self._btn_linearity, self._btn_daily, self._btn_campaign):
             btn.configure(state=state)
         self._btn_stop.configure(state="normal" if (busy and allow_stop)
                                   else "disabled")
@@ -1301,6 +1341,259 @@ class Application(tk.Tk):
         self._fig_bench.tight_layout()
         self._canvas_bench.draw_idle()
 
+    # ---- Référence H_banc (vérification quotidienne) ----
+
+    def _set_reference_hbanc(self):
+        """Enregistre le H_banc courant de l'axe actif comme référence."""
+        axis = self._vars["aps_axis"].get()
+        results = self._bench_results[axis]
+        ref = {str(f): results[f].get("h_bench_g_per_v")
+               for f in results if results[f].get("h_bench_g_per_v")}
+        if not ref:
+            messagebox.showwarning("Référence H_banc",
+                f"Aucune mesure H_banc pour l'axe {axis}.\n"
+                "Lancez d'abord « Transfert banc ».")
+            return
+        os.makedirs(_REF_DIR, exist_ok=True)
+        path = os.path.join(_REF_DIR, f"h_banc_{axis}.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"axis": axis,
+                       "date": datetime.now().isoformat(timespec="seconds"),
+                       "aps125_gain": self._aps125_gain_for(axis),
+                       "h_banc_g_per_v": ref}, fh, indent=2)
+        self._set_status(f"Référence H_banc {axis} enregistrée ({len(ref)} points)")
+
+    def _load_reference_hbanc(self, axis):
+        path = os.path.join(_REF_DIR, f"h_banc_{axis}.json")
+        if not os.path.isfile(path):
+            return None
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return {float(k): v for k, v in data.get("h_banc_g_per_v", {}).items()}
+
+    def _do_daily_verification(self):
+        """Vérif. rapide H_banc à 1/10/50 Hz vs référence enregistrée."""
+        axis = self._vars["aps_axis"].get()
+        reference = self._load_reference_hbanc(axis)
+        if not reference:
+            messagebox.showwarning("Vérification quotidienne",
+                f"Pas de référence H_banc pour l'axe {axis}.\n"
+                "Faites « Transfert banc » puis « Définir réf. ».")
+            return
+        try:
+            fraction = float(self._vars["cal_fraction"].get())
+            cap = float(self._vars["cal_cap"].get())
+            bench = self._dm.make_testbench(axis, fraction=fraction, accel_cap_g=cap)
+        except (ValueError, RuntimeError) as e:
+            messagebox.showwarning("Vérification quotidienne", str(e))
+            return
+        daily = [f for f in CAL_DAILY_FREQS_HZ if f in reference]
+        freqs = daily if daily else sorted(reference.keys())
+        self._daily_results = []
+        self._stop_event.clear()
+        self._set_busy(True, allow_stop=True)
+        self._progress.configure(mode="determinate", maximum=len(freqs), value=0)
+        bench.set_stop_event(self._stop_event)
+        bench.set_logger(lambda m: self.after(0, self._set_status, m))
+
+        def _worker():
+            return bench.daily_verification(
+                reference, freqs=freqs,
+                on_point=lambda res: self.after(0, self._on_daily_point, res))
+
+        def _on_done(results):
+            self._set_busy(False)
+            valid = [r for r in results if not r.get("skipped")]
+            ok = all(r.get("pass") for r in valid)
+            worst = max((abs(r.get("deviation_db", 0)) for r in valid), default=0.0)
+            self._set_status(f"Vérif. {axis} : écart max {worst:.2f} dB — "
+                             + ("OK" if ok else "DÉRIVE"))
+            if not ok:
+                messagebox.showwarning("Vérification quotidienne",
+                    f"Dérive détectée (écart max {worst:.2f} dB > "
+                    f"{CAL_DAILY_TOL_DB} dB).\nRefaire l'étalonnage complet du banc.")
+
+        def _on_err(exc):
+            self._set_busy(False)
+            if isinstance(exc, TestBenchAborted):
+                self._set_status("Vérification interrompue")
+            else:
+                self._on_error(exc)
+
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
+    def _on_daily_point(self, res: dict):
+        self._daily_results.append(res)
+        self._progress.configure(value=len(self._daily_results))
+        if res.get("skipped"):
+            self._set_status(f"{res['freq_hz']} Hz ignoré")
+        else:
+            self._set_status(
+                f"{res['freq_hz']} Hz : {res.get('deviation_db', 0):+.2f} dB "
+                f"({'OK' if res.get('pass') else 'DÉRIVE'})")
+
+    # ---- Linéarité ----
+
+    def _do_linearity(self):
+        axis = self._vars["aps_axis"].get()
+        if not self._dm.connected["ads1285"]:
+            messagebox.showwarning("Linéarité", "ADS1285 (géophone) non connecté.")
+            return
+        try:
+            fraction = float(self._vars["cal_fraction"].get())
+            cap = float(self._vars["cal_cap"].get())
+            bench = self._dm.make_testbench(axis, fraction=fraction, accel_cap_g=cap)
+            freqs = [float(f.strip())
+                     for f in self._vars["sweep_freqs"].get().split(",")]
+        except (ValueError, RuntimeError) as e:
+            messagebox.showwarning("Linéarité", str(e))
+            return
+        rate = int(self._vars["ads_rate"].get())
+        count = int(self._vars["ads_count"].get())
+        self._linearity_results[axis] = []
+        self._stop_event.clear()
+        self._set_busy(True, allow_stop=True)
+        self._progress.configure(mode="determinate", maximum=len(freqs), value=0)
+        self._notebook.select(4)  # onglet Linéarité
+        bench.set_stop_event(self._stop_event)
+        bench.set_logger(lambda m: self.after(0, self._set_status, m))
+
+        def _worker():
+            return bench.measure_linearity(
+                freqs, geophone_count=count, geophone_rate=rate,
+                on_point=lambda e: self.after(0, self._on_linearity_point, axis, e))
+
+        def _on_done(results):
+            self._set_busy(False)
+            ok = all(e["pass"] for e in results)
+            worst = max((e["linearity_error_db"] for e in results), default=0.0)
+            self._set_status(f"Linéarité {axis} : erreur max {worst:.2f} dB — "
+                             + ("OK" if ok else "HORS TOL"))
+
+        def _on_err(exc):
+            self._set_busy(False)
+            if isinstance(exc, TestBenchAborted):
+                self._set_status("Linéarité interrompue (sécurité)")
+            else:
+                self._on_error(exc)
+
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
+    def _on_linearity_point(self, axis: str, entry: dict):
+        self._linearity_results[axis].append(entry)
+        self._progress.configure(value=len(self._linearity_results[axis]))
+        self._set_status(
+            f"[{axis}] linéarité {entry['freq_hz']} Hz : "
+            f"{entry['linearity_error_db']:.2f} dB "
+            f"({'OK' if entry['pass'] else 'HORS TOL'})")
+
+        self._ax_lin.clear()
+        self._ax_lin.set_title("Linearite — sensibilite vs niveau d'excitation")
+        self._ax_lin.set_xlabel("Acceleration excitation (g)")
+        self._ax_lin.set_ylabel("Sensibilite (counts/g)")
+        self._ax_lin.grid(True, linestyle="--", alpha=0.5)
+        plotted = False
+        for ax_name, entries in self._linearity_results.items():
+            for e in entries:
+                pts = [p for p in e["levels"]
+                       if not p.get("skipped") and p.get("sensitivity_counts_per_g")]
+                if not pts:
+                    continue
+                pts.sort(key=lambda p: p["measured_g"])
+                xs = [p["measured_g"] for p in pts]
+                ys = [p["sensitivity_counts_per_g"] for p in pts]
+                self._ax_lin.plot(xs, ys, "o-",
+                                  label=f"{ax_name[0].upper()} {e['freq_hz']}Hz")
+                plotted = True
+        if plotted:
+            self._ax_lin.legend(fontsize=7)
+        self._fig_lin.tight_layout()
+        self._canvas_lin.draw_idle()
+
+    # ---- Campagne 2 axes (guidée) ----
+
+    def _confirm_blocking(self, title: str, message: str) -> bool:
+        """Affiche un askokcancel sur le thread principal et attend la réponse."""
+        evt = threading.Event()
+        holder = {"ok": False}
+
+        def ask():
+            holder["ok"] = messagebox.askokcancel(title, message)
+            evt.set()
+
+        self.after(0, ask)
+        evt.wait()
+        return holder["ok"]
+
+    def _do_campaign(self):
+        """Campagne guidée : étalonne l'axe courant puis l'autre, avec pause
+        de reconfiguration entre les deux (1 seul Wavetek, routage manuel)."""
+        active = self._vars["aps_axis"].get()
+        other = "horizontal" if active == "vertical" else "vertical"
+        axes = [active, other]
+        try:
+            fraction = float(self._vars["cal_fraction"].get())
+            cap = float(self._vars["cal_cap"].get())
+            freqs = [float(f.strip())
+                     for f in self._vars["sweep_freqs"].get().split(",")]
+        except ValueError:
+            messagebox.showerror("Campagne", "Paramètres invalides.")
+            return
+        rate = int(self._vars["ads_rate"].get())
+        count = int(self._vars["ads_count"].get())
+        self._last_rate = rate
+        self._stop_event.clear()
+        self._set_busy(True, allow_stop=True)
+        self._notebook.select(2)
+
+        def _set_axis_ui(ax):
+            self._vars["aps_axis"].set(ax)
+            self._on_aps_axis_change()
+
+        def _worker():
+            for ax in axes:
+                if self._stop_event.is_set():
+                    break
+                self.after(0, _set_axis_ui, ax)
+                if not self._confirm_blocking(
+                        f"Campagne — axe {ax}",
+                        f"Préparez l'axe {ax} :\n"
+                        f"• Routez le Wavetek vers la chaîne {ax}\n"
+                        f"• Montez/orientez le géophone\n"
+                        f"• Réglez et saisissez le gain APS 125 ({ax})\n\n"
+                        "OK pour étalonner cet axe, Annuler pour arrêter."):
+                    break
+                try:
+                    bench = self._dm.make_testbench(ax, fraction=fraction,
+                                                    accel_cap_g=cap)
+                except RuntimeError as e:
+                    self.after(0, messagebox.showwarning, "Campagne",
+                               f"Axe {ax} : {e}")
+                    continue
+                bench.set_stop_event(self._stop_event)
+                bench.set_logger(lambda m: self.after(0, self._set_status, m))
+                bench.center_zero()
+                self._sweep_results[ax] = {}
+                self.after(0, lambda n=len(freqs): self._progress.configure(
+                    mode="determinate", maximum=n, value=0))
+                bench.calibration_sweep(
+                    freqs, geophone_count=count, geophone_rate=rate,
+                    on_point=lambda res, a=ax: self.after(0, self._on_sweep_point, a, res))
+            return None
+
+        def _on_done(_):
+            self._set_busy(False)
+            self._set_status("Campagne 2 axes terminée")
+
+        def _on_err(exc):
+            self._set_busy(False)
+            if isinstance(exc, TestBenchAborted):
+                self._set_status("Campagne interrompue (sécurité)")
+            else:
+                self._on_error(exc)
+
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
     def _do_stop(self):
         self._stop_event.set()
         self._set_status("Arret demande...")
@@ -1482,6 +1775,15 @@ class Application(tk.Tk):
             save_dict[f"{ax_name}_hbench_g_per_v"] = np.array(
                 [results[fr].get("h_bench_g_per_v", 0) for fr in fdone],
                 dtype=np.float64)
+        # Linéarité par axe (erreur dB par fréquence)
+        for ax_name in ("vertical", "horizontal"):
+            entries = self._linearity_results[ax_name]
+            if not entries:
+                continue
+            save_dict[f"{ax_name}_linearity_freq"] = np.array(
+                [e["freq_hz"] for e in entries], dtype=np.float64)
+            save_dict[f"{ax_name}_linearity_error_db"] = np.array(
+                [e["linearity_error_db"] for e in entries], dtype=np.float64)
         np.savez(path, **save_dict)
 
     # ===================================================================

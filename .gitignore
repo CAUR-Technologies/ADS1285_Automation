@@ -42,6 +42,9 @@ htmlcov/
 config.ini
 *.log
 
+# Références d'étalonnage (spécifiques à l'installation)
+reference/
+
 # Données
 data/
 *.csv
