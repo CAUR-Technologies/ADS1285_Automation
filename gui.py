@@ -462,7 +462,7 @@ class Application(tk.Tk):
         self._row(f, "Port :", self._make_var("wav_port", WAVETEK_PORT), 0)
         self._row(f, "Forme d'onde :", self._make_var("wav_wave", "sine"), 1,
                   combo_values=["sine", "square", "triangle", "ramp",
-                                "pulse", "noise", "dc"])
+                                "cosine", "pulse", "dc"])
         self._row(f, "Frequence (Hz) :", self._make_var("wav_freq", "10.0"), 2)
         self._row(f, "Amplitude (Vpp) :", self._make_var("wav_ampl", "1.0"), 3)
         self._row(f, "Offset (V) :", self._make_var("wav_offset", "0.0"), 4)
