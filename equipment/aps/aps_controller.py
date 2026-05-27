@@ -70,6 +70,11 @@ class APSController:
             stopbits=serial.STOPBITS_ONE,
             timeout=APS_TIMEOUT,
         )
+        # Certaines unités (MCU type ATmega) redémarrent à l'ouverture du port
+        # (auto-reset DTR) et émettent une bannière 'Mega64…'. On laisse passer
+        # le boot puis on vide le buffer pour ne pas la lire sur 1re commande.
+        time.sleep(0.5)
+        self._drain()
         print(f"APS 0109 [{self._axis}] connecté sur {self._port} (baud={self._baud}).")
 
     def disconnect(self) -> None:
@@ -98,9 +103,42 @@ class APSController:
             response += byte
         return response.decode("ascii", errors="replace").strip()
 
+    def _drain(self) -> None:
+        """Vide toute donnée résiduelle (bannière de boot 'Mega64…' en transit)."""
+        if not (self._serial and self._serial.is_open):
+            return
+        self._serial.reset_input_buffer()
+        old = self._serial.timeout
+        self._serial.timeout = 0.2
+        try:
+            while self._serial.read(128):
+                pass
+        finally:
+            self._serial.timeout = old
+
+    def _looks_valid(self, resp: str) -> bool:
+        up = resp.upper()
+        return (self._OK_SUFFIX in up) or (self._ERROR_TOKEN in up)
+
+    def _transact(self, cmd: str, retries: int = 4) -> str:
+        """
+        Envoie cmd et lit la réponse, en ignorant une éventuelle bannière de
+        démarrage du MCU (ex. 'Mega64 \\r??' après un reset/auto-reset DTR) :
+        si la réponse n'est ni OK ni ERR, vide le buffer, laisse le temps au
+        boot, et retente.
+        """
+        resp = ""
+        for _ in range(retries):
+            resp = self._send_raw(cmd)
+            if self._looks_valid(resp):
+                return resp
+            self._drain()
+            time.sleep(0.3)   # laisser l'unité finir son boot avant de retenter
+        return resp
+
     def _send_command(self, cmd: str, expect_ok: bool = True) -> str:
         """Envoie une commande de réglage ; vérifie que la réponse finit par 'OK'."""
-        resp = self._send_raw(cmd)
+        resp = self._transact(cmd)
         if expect_ok:
             up = resp.upper()
             if self._ERROR_TOKEN in up:
@@ -116,7 +154,7 @@ class APSController:
         Envoie une query et extrait la valeur du format '<commande> <valeur> OK'.
         Ex. : 'ZER? 0 OK' -> '0' ; 'FWV? 1.02.01 OK' -> '1.02.01'.
         """
-        resp = self._send_raw(cmd)
+        resp = self._transact(cmd)
         if self._ERROR_TOKEN in resp.upper():
             raise RuntimeError(
                 f"Erreur APS 0109 [{self._axis}] ({cmd}) : {resp!r}")
