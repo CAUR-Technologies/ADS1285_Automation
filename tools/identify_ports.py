@@ -42,10 +42,13 @@ def _read_until(ser, terminator=b"\x00", max_bytes=256):
     return out.decode("ascii", errors="replace").strip()
 
 
-def try_aps(port):
+APS_BAUDS = [19200, 9600, 38400, 4800, 2400]
+
+
+def try_aps(port, baud=19200):
     """Retourne (firmware, serial) si un APS 0109 répond, sinon None."""
     try:
-        with serial.Serial(port, 19200, bytesize=8, parity="N",
+        with serial.Serial(port, baud, bytesize=8, parity="N",
                            stopbits=1, timeout=1.0) as s:
             s.write(b"FWV?\x00")
             time.sleep(0.15)
@@ -54,7 +57,9 @@ def try_aps(port):
             s.write(b"SER?\x00")
             time.sleep(0.15)
             ser_num = _read_until(s)
-            if fwv or ser_num:
+            # Réponse APS valide -> se termine par "OK". Évite les faux positifs
+            # (octets brouillés à un mauvais baud).
+            if "OK" in fwv.upper() or "OK" in ser_num.upper():
                 return (fwv, ser_num)
     except Exception:
         pass
@@ -104,13 +109,27 @@ def list_serial_ports(skip_bluetooth=True):
 # ─────────────────────────────────────────────────────────────────────────
 
 def main_cli(argv):
-    ports = argv or [d for d, _ in list_serial_ports()]
+    scan_baud = "--scan-baud" in argv
+    ports = [a for a in argv if not a.startswith("--")] \
+        or [d for d, _ in list_serial_ports()]
     if not ports:
         print("Aucun port à scanner.")
         return
-    print(f"Scan de : {', '.join(ports)}\n")
+    print(f"Scan de : {', '.join(ports)}"
+          + (" (balayage baud APS)" if scan_baud else "") + "\n")
     for port in ports:
         print(f"--- {port} ---")
+        if scan_baud:
+            found = False
+            for baud in APS_BAUDS:
+                aps = try_aps(port, baud)
+                if aps:
+                    print(f"  → APS 0109 @ {baud} baud "
+                          f"(série={aps[1]!r}, fw={aps[0]!r})")
+                    found = True
+            if not found:
+                print(f"  → aucune réponse APS à {APS_BAUDS}")
+            continue
         info = identify_port(port)
         if info["kind"] == "APS 0109":
             print(f"  → APS 0109  (série={info['serial']!r}, {info['detail']})")
