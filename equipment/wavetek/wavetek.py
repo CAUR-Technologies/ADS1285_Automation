@@ -18,6 +18,7 @@ Sur l'appareil, régler REMOTE SETUP -> interface: RS232, baud: 9600.
 import serial
 import time
 from config.settings import WAVETEK_PORT, WAVETEK_BAUD, WAVETEK_TIMEOUT
+from equipment.instrlog import get_logger
 
 
 class Wavetek39A:
@@ -55,6 +56,7 @@ class Wavetek39A:
         self._baud = min(baud, 9600)   # 9600 baud max (p.9)
         self._serial: serial.Serial | None = None
         self._current_waveform = "sine"
+        self._log = get_logger("wavetek")
 
     # ─────────────────────────────────────────────────────────────────────
     # Connexion / Déconnexion
@@ -95,9 +97,11 @@ class Wavetek39A:
         self._serial.reset_input_buffer()
         self._serial.write((cmd + self._TERMINATOR).encode("ascii"))
         if "?" in cmd:
-            resp = self._serial.readline()
-            return resp.decode("ascii", errors="replace").strip()
+            resp = self._serial.readline().decode("ascii", errors="replace").strip()
+            self._log.debug(f"TX {cmd!r}  ->  RX {resp!r}")
+            return resp
         time.sleep(0.02)
+        self._log.debug(f"TX {cmd!r}")
         return ""
 
     # ─────────────────────────────────────────────────────────────────────

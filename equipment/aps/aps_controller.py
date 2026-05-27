@@ -19,6 +19,7 @@ from config.settings import (
     APS_BAUD,
     APS_TIMEOUT,
 )
+from equipment.instrlog import get_logger
 
 
 class APSController:
@@ -51,6 +52,7 @@ class APSController:
         self._port = port or self._DEFAULT_PORTS[axis]
         self._baud = baud
         self._serial: serial.Serial | None = None
+        self._log = get_logger("aps")
 
     @property
     def axis(self) -> str:
@@ -101,7 +103,9 @@ class APSController:
             if not byte or byte == b"\x00":
                 break
             response += byte
-        return response.decode("ascii", errors="replace").strip()
+        decoded = response.decode("ascii", errors="replace").strip()
+        self._log.debug(f"[{self._axis}] TX {cmd!r}  ->  RX {decoded!r}")
+        return decoded
 
     def _drain(self) -> None:
         """Vide toute donnée résiduelle (bannière de boot 'Mega64…' en transit)."""
@@ -128,10 +132,12 @@ class APSController:
         boot, et retente.
         """
         resp = ""
-        for _ in range(retries):
+        for attempt in range(retries):
             resp = self._send_raw(cmd)
             if self._looks_valid(resp):
                 return resp
+            self._log.debug(f"[{self._axis}] réponse inattendue {resp!r} "
+                            f"(bannière de boot ?) — retry {attempt + 1}/{retries}")
             self._drain()
             time.sleep(0.3)   # laisser l'unité finir son boot avant de retenter
         return resp
