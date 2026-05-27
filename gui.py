@@ -14,6 +14,7 @@ import sys
 import time
 import json
 import threading
+import traceback
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
@@ -42,6 +43,7 @@ from equipment.ads1285 import ADS1285
 from equipment.wavetek import Wavetek39A
 from equipment.aps import APSController
 from equipment.testbench import TestBench, TestBenchAborted
+from equipment.instrlog import get_logger
 
 # Dossier des references H_banc (vérification quotidienne)
 _REF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference")
@@ -279,6 +281,7 @@ class Application(tk.Tk):
         self._dm = DeviceManager()
         self._busy = False
         self._stop_event = threading.Event()
+        self._glog = get_logger("GUI")
 
         # Donnees d'acquisition
         self._last_adc = None          # list[int]
@@ -935,7 +938,20 @@ class Application(tk.Tk):
     def _on_error(self, exc):
         self._set_busy(False)
         self._set_status("Erreur")
+        # Journaliser l'erreur complète (avec traceback) dans logs/bench.log
+        tb = "".join(traceback.format_exception(type(exc), exc,
+                                                exc.__traceback__)).strip()
+        self._glog.error("Erreur worker : %s\n%s", exc, tb)
         messagebox.showerror("Erreur", str(exc))
+
+    def report_callback_exception(self, exc, val, tb):
+        """Capture toute exception non gérée dans un callback Tk -> journal + dialogue."""
+        detail = "".join(traceback.format_exception(exc, val, tb)).strip()
+        try:
+            self._glog.error("Exception non gérée (callback Tk) :\n%s", detail)
+        except Exception:
+            pass
+        messagebox.showerror("Erreur", str(val))
 
     # --- Test ADC single-shot ---
 

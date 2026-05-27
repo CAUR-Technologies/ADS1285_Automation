@@ -56,7 +56,7 @@ class Wavetek39A:
         self._baud = min(baud, 9600)   # 9600 baud max (p.9)
         self._serial: serial.Serial | None = None
         self._current_waveform = "sine"
-        self._log = get_logger("wavetek")
+        self._log = get_logger("Wavetek")
 
     # ─────────────────────────────────────────────────────────────────────
     # Connexion / Déconnexion

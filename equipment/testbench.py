@@ -22,6 +22,7 @@ import time
 
 from equipment.aps import shaker_physics as sp
 from equipment.dsp import coherent_amplitude_peak, ratio_db, linearity_error_db
+from equipment.instrlog import get_logger
 from constants import CAL_LINEARITY_MAX_DB, CAL_DAILY_TOL_DB, CAL_DAILY_FREQS_HZ
 from config.settings import (
     SHAKER_STROKE_MM,
@@ -79,8 +80,11 @@ class TestBench:
         self._zer_value = 0          # dernière valeur ZER appliquée (-99..99)
         self._settle_s = 4.0         # temps de stabilisation par défaut (s)
         self._stop = None            # threading.Event optionnel
-        self._log = print            # callback de log (remplaçable)
         self._aps_started = False    # le contrôleur APS a-t-il reçu STA ?
+        # Journalisation : fichier unifié + callback statut (GUI)
+        self._flog = get_logger("TestBench")
+        self._status_cb = print
+        self._log = lambda m: (self._flog.debug(m), self._status_cb(m))
 
         self._h_bench = {}           # {freq: H_banc en g/V} — caractérisation banc
         self._noise_floor_g = None   # plancher de bruit mesuré (g RMS)
@@ -90,8 +94,9 @@ class TestBench:
     # ──────────────────────────────────────────────────────────────────
 
     def set_logger(self, fn):
-        """Définit le callback de log (ex. status bar du GUI)."""
-        self._log = fn
+        """Définit le callback de statut (ex. status bar du GUI). Le journal
+        fichier (logs/bench.log) reste alimenté en parallèle."""
+        self._status_cb = fn
 
     def set_stop_event(self, event):
         """Définit un threading.Event pour interrompre les séquences."""

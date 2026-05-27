@@ -52,7 +52,7 @@ class APSController:
         self._port = port or self._DEFAULT_PORTS[axis]
         self._baud = baud
         self._serial: serial.Serial | None = None
-        self._log = get_logger("aps")
+        self._log = get_logger("APS")
 
     @property
     def axis(self) -> str:
@@ -148,11 +148,13 @@ class APSController:
         if expect_ok:
             up = resp.upper()
             if self._ERROR_TOKEN in up:
-                raise RuntimeError(
-                    f"Erreur APS 0109 [{self._axis}] ({cmd}) : {resp!r}")
+                msg = f"Erreur APS 0109 [{self._axis}] ({cmd}) : {resp!r}"
+                self._log.error(msg)
+                raise RuntimeError(msg)
             if not up.endswith(self._OK_SUFFIX):
-                raise RuntimeError(
-                    f"Réponse APS 0109 inattendue ({cmd}) : {resp!r}")
+                msg = f"Réponse APS 0109 inattendue ({cmd}) : {resp!r}"
+                self._log.error(msg)
+                raise RuntimeError(msg)
         return resp
 
     def _query_value(self, cmd: str) -> str:
@@ -162,8 +164,9 @@ class APSController:
         """
         resp = self._transact(cmd)
         if self._ERROR_TOKEN in resp.upper():
-            raise RuntimeError(
-                f"Erreur APS 0109 [{self._axis}] ({cmd}) : {resp!r}")
+            msg = f"Erreur APS 0109 [{self._axis}] ({cmd}) : {resp!r}"
+            self._log.error(msg)
+            raise RuntimeError(msg)
         val = resp.strip()
         if val.upper().startswith(cmd.upper()):       # retirer l'écho
             val = val[len(cmd):].strip()

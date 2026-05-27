@@ -1,9 +1,14 @@
 """
-Journalisation légère des échanges instruments (commandes TX / réponses RX).
+Journal unifié du banc -> logs/bench.log.
 
-Écrit dans logs/<nom>.log avec horodatage. Utile pour déboguer les liaisons
-série (APS 0109, Wavetek) : on voit exactement ce qui est envoyé/reçu et quand
-(ex. repérer une bannière de reboot 'Mega64' et son instant).
+Une seule destination, avec une colonne 'source' (APS, Wavetek, ADS1285,
+TestBench, GUI…). Trace les échanges (TX/RX, niveau DEBUG) et surtout les
+erreurs de toute part (niveau ERROR, avec traceback via exc_info).
+
+Format : HH:MM:SS.mmm  <source>  <niveau>  <message>
+
+Note : le bridge 32-bit (processus séparé) conserve son propre
+bridge/bridge32.log — il ne partage pas ce process.
 """
 
 import os
@@ -11,24 +16,48 @@ import logging
 
 _LOG_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+_LOG_FILE = os.path.join(_LOG_DIR, "bench.log")
+_ROOT_NAME = "bench"
+_configured = False
 
 
-def get_logger(name: str) -> logging.Logger:
-    """Retourne un logger écrivant dans logs/<name>.log (créé au besoin)."""
-    logger = logging.getLogger(f"instr.{name}")
-    if not logger.handlers:
+class _DefaultSourceFilter(logging.Filter):
+    """Garantit qu'un enregistrement a toujours un attribut 'source'."""
+    def filter(self, record):
+        if not hasattr(record, "source"):
+            record.source = "-"
+        return True
+
+
+def _ensure_configured() -> logging.Logger:
+    global _configured
+    root = logging.getLogger(_ROOT_NAME)
+    if not _configured:
         try:
             os.makedirs(_LOG_DIR, exist_ok=True)
-            handler = logging.FileHandler(
-                os.path.join(_LOG_DIR, f"{name}.log"), encoding="utf-8")
-            handler.setFormatter(
-                logging.Formatter("%(asctime)s.%(msecs)03d  %(message)s",
-                                  datefmt="%H:%M:%S"))
-            logger.addHandler(handler)
-            logger.setLevel(logging.DEBUG)
-            logger.propagate = False
+            handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
+            handler.setFormatter(logging.Formatter(
+                "%(asctime)s.%(msecs)03d  %(source)-9s  %(levelname)-5s  %(message)s",
+                datefmt="%H:%M:%S"))
+            handler.addFilter(_DefaultSourceFilter())
+            root.addHandler(handler)
+            root.setLevel(logging.DEBUG)
+            root.propagate = False
         except Exception:
-            # En cas d'échec (droits, etc.) : logger inerte plutôt que planter
-            logger.addHandler(logging.NullHandler())
-            logger.propagate = False
-    return logger
+            root.addHandler(logging.NullHandler())
+            root.propagate = False
+        _configured = True
+    return root
+
+
+def get_logger(source: str) -> logging.LoggerAdapter:
+    """
+    Retourne un logger écrivant dans le journal unifié logs/bench.log,
+    étiqueté par <source>.
+
+    Usage :
+        log = get_logger("APS")
+        log.debug("TX 'STF 20' -> RX 'STF OK'")
+        log.error("liaison perdue", exc_info=exc)
+    """
+    return logging.LoggerAdapter(_ensure_configured(), {"source": source})
