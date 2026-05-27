@@ -289,6 +289,7 @@ class Application(tk.Tk):
         self._bench_results = {"vertical": {}, "horizontal": {}}  # {axe: {freq: res}}
         self._linearity_results = {"vertical": [], "horizontal": []}  # {axe: [entry]}
         self._cross_results = {}       # {freq: entry} sensibilité transversale
+        self._noise_floor_g = {"vertical": None, "horizontal": None}  # g RMS par axe
         # Valeurs des knobs APS 125 saisies par l'usager (ampli manuel, par axe)
         self._aps125_gains = {"vertical": "", "horizontal": ""}
         self._aps125_climits = {"vertical": "", "horizontal": ""}
@@ -1274,6 +1275,9 @@ class Application(tk.Tk):
             messagebox.showerror("Plancher de bruit", "Durée invalide.")
             return
         accel = self._dm.instances["accel"]
+        axis = self._vars["aps_axis"].get()
+        ref_channel = (NI_REF_CHANNEL_VERTICAL if axis == "vertical"
+                       else NI_REF_CHANNEL_HORIZONTAL)
         # Couper l'excitation si le Wavetek est connecté
         if self._dm.connected.get("wavetek") and self._dm.instances.get("wavetek"):
             try:
@@ -1281,20 +1285,22 @@ class Application(tk.Tk):
             except Exception:
                 pass
         self._set_busy(True)
-        self._set_status(f"Plancher de bruit ({duration:.0f}s, shaker arrêté)...")
+        self._set_status(f"Plancher de bruit {axis} ({duration:.0f}s, shaker arrêté)...")
         self._progress.configure(mode="indeterminate")
         self._progress.start(20)
 
         def _worker():
-            return accel.measure_noise_floor(duration)
+            return accel.measure_noise_floor(duration, ref_channel=ref_channel)
 
         def _on_done(floor_g):
             self._progress.stop()
             self._progress.configure(mode="determinate", value=0)
             self._set_busy(False)
+            self._noise_floor_g[axis] = floor_g       # mémorisé par axe
             self._lbl_noise_floor.configure(
-                text=f"Plancher de bruit : {floor_g:.4g} g RMS")
-            self._set_status(f"Plancher de bruit = {floor_g:.4g} g RMS")
+                text=f"Plancher {axis[0].upper()} : {floor_g:.4g} g RMS")
+            self._set_status(f"Plancher de bruit {axis} = {floor_g:.4g} g RMS "
+                             "(sauvegardé avec la calibration)")
 
         def _on_err(exc):
             self._progress.stop()
@@ -1890,6 +1896,8 @@ class Application(tk.Tk):
                 f.write(f"# aps125_gain_horizontal: {self._aps125_gain_for('horizontal')}\n")
                 f.write(f"# aps125_current_limit_vertical: {self._aps125_climit_for('vertical')}\n")
                 f.write(f"# aps125_current_limit_horizontal: {self._aps125_climit_for('horizontal')}\n")
+                f.write(f"# noise_floor_vertical_g_rms: {self._noise_floor_g['vertical']}\n")
+                f.write(f"# noise_floor_horizontal_g_rms: {self._noise_floor_g['horizontal']}\n")
                 f.write(",".join(cols) + "\n")
                 for ax_name in ("vertical", "horizontal"):
                     results = self._sweep_results[ax_name]
@@ -1918,6 +1926,12 @@ class Application(tk.Tk):
                 np.array(self._aps125_climit_for("vertical")),
             "aps125_current_limit_horizontal":
                 np.array(self._aps125_climit_for("horizontal")),
+            "noise_floor_vertical_g_rms":
+                np.array(self._noise_floor_g["vertical"]
+                         if self._noise_floor_g["vertical"] is not None else np.nan),
+            "noise_floor_horizontal_g_rms":
+                np.array(self._noise_floor_g["horizontal"]
+                         if self._noise_floor_g["horizontal"] is not None else np.nan),
         }
         if self._last_adc is not None:
             save_dict["adc"] = np.array(self._last_adc, dtype=np.int32)
