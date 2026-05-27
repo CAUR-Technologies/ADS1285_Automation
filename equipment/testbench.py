@@ -80,6 +80,7 @@ class TestBench:
         self._settle_s = 4.0         # temps de stabilisation par défaut (s)
         self._stop = None            # threading.Event optionnel
         self._log = print            # callback de log (remplaçable)
+        self._aps_started = False    # le contrôleur APS a-t-il reçu STA ?
 
         self._h_bench = {}           # {freq: H_banc en g/V} — caractérisation banc
         self._noise_floor_g = None   # plancher de bruit mesuré (g RMS)
@@ -151,6 +152,7 @@ class TestBench:
         self._safe_shutdown()
         self._aps.set_zero_position(0)
         self._aps.start()
+        self._aps_started = True
         time.sleep(settle_s)
 
         pmax = self._aps.get_position_max()
@@ -173,6 +175,14 @@ class TestBench:
     # ──────────────────────────────────────────────────────────────────
     # Réglage d'un point de fréquence (stiffness + servo amplitude)
     # ──────────────────────────────────────────────────────────────────
+
+    def _ensure_started(self) -> None:
+        """Démarre le contrôleur APS (STA) une fois — sinon l'AC est coupé et
+        le shaker ne bouge pas. Le démarrage centre l'armature sur la consigne ZER."""
+        if not self._aps_started:
+            self._aps.start()
+            self._aps_started = True
+            self._log(f"[banc] contrôleur APS démarré (STA)")
 
     def _apply_stiffness(self, freq_hz: float) -> int:
         """Applique la stiffness recommandée et attend la stabilisation (WTR)."""
@@ -265,6 +275,7 @@ class TestBench:
             return result
 
         self._check_stop()
+        self._ensure_started()          # contrôleur en marche (sinon AC coupé)
         self._apply_stiffness(freq_hz)
         self._wav.set_frequency(freq_hz)
         self._wav.enable_output()
