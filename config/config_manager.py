@@ -33,7 +33,7 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "python32_path":   r"C:\Python311-32\python.exe",
     },
     "APS": {
-        "baud":                       "9600",
+        "baud":                       "19200",   # APS 0109 : 19200 baud (spec)
         "timeout":                    "2.0",
         "controller_vertical_port":   "COM3",
         "controller_horizontal_port": "COM4",
