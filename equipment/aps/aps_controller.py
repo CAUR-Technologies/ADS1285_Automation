@@ -121,8 +121,10 @@ class APSController:
             self._serial.timeout = old
 
     def _looks_valid(self, resp: str) -> bool:
-        up = resp.upper()
-        return (self._OK_SUFFIX in up) or (self._ERROR_TOKEN in up)
+        # Réponse finale = se termine par OK (succès) ou ERR (erreur).
+        # NB : on teste endswith, pas "in", car 'no_error' contient 'ERR'.
+        up = resp.upper().rstrip()
+        return up.endswith(self._OK_SUFFIX) or up.endswith(self._ERROR_TOKEN)
 
     def _transact(self, cmd: str, retries: int = 4) -> str:
         """
@@ -146,8 +148,8 @@ class APSController:
         """Envoie une commande de réglage ; vérifie que la réponse finit par 'OK'."""
         resp = self._transact(cmd)
         if expect_ok:
-            up = resp.upper()
-            if self._ERROR_TOKEN in up:
+            up = resp.upper().rstrip()
+            if up.endswith(self._ERROR_TOKEN):
                 msg = f"Erreur APS 0109 [{self._axis}] ({cmd}) : {resp!r}"
                 self._log.error(msg)
                 raise RuntimeError(msg)
@@ -163,7 +165,7 @@ class APSController:
         Ex. : 'ZER? 0 OK' -> '0' ; 'FWV? 1.02.01 OK' -> '1.02.01'.
         """
         resp = self._transact(cmd)
-        if self._ERROR_TOKEN in resp.upper():
+        if resp.upper().rstrip().endswith(self._ERROR_TOKEN):
             msg = f"Erreur APS 0109 [{self._axis}] ({cmd}) : {resp!r}"
             self._log.error(msg)
             raise RuntimeError(msg)
