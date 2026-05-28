@@ -1439,17 +1439,27 @@ class Application(tk.Tk):
         self._progress.start(20)
 
         def _worker():
-            return accel.measure_noise_floor(duration, ref_channel=ref_channel)
+            # Acquérir la fenêtre brute (= mêmes éch. que measure_noise_floor)
+            # pour pouvoir sauvegarder les données temporelles du bruit.
+            arr = accel.acquire_seconds(duration)
+            ref = arr[ref_channel] if getattr(arr, "ndim", 1) == 2 else arr
+            ref = np.asarray(ref, dtype=float)
+            floor = dsp.rms(ref) / accel.sensitivity_v_per_g
+            return floor, ref, accel.sample_rate
 
-        def _on_done(floor_g):
+        def _on_done(result):
+            floor_g, signal, fs = result
             self._progress.stop()
             self._progress.configure(mode="determinate", value=0)
             self._set_busy(False)
             self._noise_floor_g[axis] = floor_g       # mémorisé par axe
             self._lbl_noise_floor.configure(
                 text=f"Plancher {axis[0].upper()} : {floor_g:.4g} g RMS")
-            self._set_status(f"Plancher de bruit {axis} = {floor_g:.4g} g RMS "
-                             "(sauvegardé avec la calibration)")
+            saved = self._autosave_noise(axis, floor_g, signal, fs, duration)
+            msg = f"Plancher de bruit {axis} = {floor_g:.4g} g RMS"
+            if saved:
+                msg += f" · {os.path.basename(saved)}"
+            self._set_status(msg)
 
         def _on_err(exc):
             self._progress.stop()
@@ -2283,6 +2293,30 @@ class Application(tk.Tk):
         np.savez(datastore.build_path("acquisition", "npz",
                                       geophone=geophone, ts=ts), **save)
         return self._announce_saved("acquisition", csv_path)
+
+    def _autosave_noise(self, axis: str, floor_g: float, signal, fs, duration):
+        """Plancher de bruit : forme d'onde (CSV) + valeur RMS + métadonnées (NPZ).
+
+        Caractérise le banc (accéléro seul) → pas de géophone dans le nom."""
+        ts = datastore.timestamp()
+        header = self._meta_header(axis) + [
+            f"plancher_g_rms: {floor_g:.6g}",
+            f"duree_s: {duration:.3g}",
+            f"fs_hz: {fs}",
+        ]
+        csv_path = datastore.build_path("plancher_bruit", "csv", axis=axis, ts=ts)
+        rows = ((i, i / fs, float(v)) for i, v in enumerate(signal))
+        datastore.write_csv(csv_path, ["index", "time_s", "accel_v"], rows,
+                            header_comments=header)
+        save = self._meta_npz()
+        save["axis"] = np.array(axis)
+        save["plancher_g_rms"] = np.array(floor_g)
+        save["accel_wave"] = np.asarray(signal)
+        save["accel_fs"] = np.array(fs)
+        save["duration_s"] = np.array(duration)
+        np.savez(datastore.build_path("plancher_bruit", "npz", axis=axis, ts=ts),
+                 **save)
+        return self._announce_saved("plancher_bruit", csv_path)
 
     def _autosave_sweep(self, axis: str):
         """Balayage de calibration : table sensibilite (CSV) + formes d'onde (NPZ)."""
