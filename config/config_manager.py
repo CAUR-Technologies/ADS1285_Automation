@@ -31,6 +31,11 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "num_samples":     "1024",
         "register_map":    r"C:\Program Files (x86)\Texas Instruments\ADS1285 EVM\Register Map.xml",
         "python32_path":   r"C:\Python311-32\python.exe",
+        # Tension crete pleine echelle de l'entree (V) a la PGA gain utilisee.
+        # ADS1285 : +/-2,5 V a gain 1 (independant de VREF). Diviser par le gain
+        # PGA si un gain > 1 est programme. Sert au calcul de la vitesse max
+        # geophone (anti-saturation).
+        "full_scale_vpeak": "2.5",
     },
     "APS": {
         "baud":                       "19200",   # APS 0109 : 19200 baud (spec)
@@ -72,13 +77,16 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         # Plafond absolu d'acceleration en haute frequence (g)
         "accel_cap_g":               "1.0",
         # Acceleration plancher (g) — en dessous, point ignore (cible trop faible).
-        # Bas pour autoriser les tres basses frequences (ex. 0,1 Hz ~0,6 mg).
-        "accel_floor_g":             "0.0005",
-        # Vitesse crete max (m/s) toleree par le geophone (capteur de vitesse).
-        # Borne la sortie du geophone -> pas de saturation ; transforme le
-        # balayage en balayage a vitesse constante dans la bande utile.
-        # Regler selon le geophone : v_max ≈ 0,8 . V_pleine_echelle_ADS / sensibilite[V/(m/s)].
+        # Tres bas pour autoriser les geophones tres sensibles aux basses freq.
+        # (la qualite reelle est signalee par le SNR, pas par ce plancher).
+        "accel_floor_g":             "0.0002",
+        # Vitesse crete max (m/s) de SECOURS pour un geophone inconnu (absent de
+        # equipment/geophones.py). Pour les geophones connus, v_max est calcule
+        # automatiquement depuis leur sensibilite/amortissement.
         "geophone_max_velocity_mps": "0.01",
+        # Fraction de la pleine echelle ADC visee au pic de reponse du geophone
+        # (marge anti-saturation : 0,5 = sortie max a 50 % de la pleine echelle).
+        "geophone_velocity_safety":  "0.5",
         # Sensibilite chaine accelerometre NI : Silicon Designs 2240-005 = 800 mV/g.
         # Si la boite Spektra applique un gain, ajuster cette valeur.
         "accel_sensitivity_v_per_g": "0.8",

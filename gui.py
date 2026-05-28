@@ -36,6 +36,8 @@ from config.settings import (
     NI_DEVICE_NAME, NI_AI_CHANNELS, NI_SAMPLE_RATE, NI_SAMPLES_PER_CHANNEL,
     NI_REF_CHANNEL_VERTICAL, NI_REF_CHANNEL_HORIZONTAL,
     SHAKER_ENVELOPE_FRACTION, SHAKER_ACCEL_CAP_G, SHAKER_GEOPHONE,
+    SHAKER_GEOPHONE_MAX_VELOCITY_MPS, SHAKER_GEOPHONE_VELOCITY_SAFETY,
+    ADS1285_FULL_SCALE_VPEAK,
     DATA_OUTPUT_DIR,
 )
 from constants import CAL_DAILY_FREQS_HZ, CAL_DAILY_TOL_DB, CAL_CROSS_AXIS_MAX_PCT
@@ -45,6 +47,7 @@ from equipment.aps import APSController
 from equipment.testbench import TestBench, TestBenchAborted
 from equipment.instrlog import get_logger
 from equipment import dsp
+from equipment import geophones
 import equipment.datastore as datastore
 
 # Dossier des references H_banc (vérification quotidienne)
@@ -201,7 +204,8 @@ class DeviceManager:
 
     def make_testbench(self, axis: str,
                        fraction: float | None = None,
-                       accel_cap_g: float | None = None) -> TestBench:
+                       accel_cap_g: float | None = None,
+                       geophone_max_velocity_mps: float | None = None) -> TestBench:
         """Construit un TestBench a partir des instruments connectes.
 
         Wavetek + APS (axe actif) + accelerometre sont requis ; l'ADS1285
@@ -232,6 +236,8 @@ class DeviceManager:
             kw["envelope_fraction"] = fraction
         if accel_cap_g is not None:
             kw["accel_cap_g"] = accel_cap_g
+        if geophone_max_velocity_mps is not None:
+            kw["geophone_max_velocity_mps"] = geophone_max_velocity_mps
         return TestBench(wav, aps, accel, ads, **kw)
 
 
@@ -1221,6 +1227,17 @@ class Application(tk.Tk):
             return self._vars["aps125_climit"].get()
         return self._aps125_climits.get(axis, "")
 
+    def _geophone_vmax(self) -> float:
+        """Vitesse crête max (m/s) anti-saturation pour le géophone sélectionné.
+
+        Calculée depuis sa sensibilité/amortissement (equipment/geophones.py) et
+        la pleine échelle ADC ; repli sur la valeur de config si modèle inconnu."""
+        name = self._vars["cal_geophone"].get()
+        return geophones.max_safe_velocity_mps(
+            name, ADS1285_FULL_SCALE_VPEAK,
+            safety=SHAKER_GEOPHONE_VELOCITY_SAFETY,
+            fallback=SHAKER_GEOPHONE_MAX_VELOCITY_MPS)
+
     def _do_sweep(self):
         """Sweep de calibration géophone piloté par le TestBench (banc complet)."""
         axis = self._vars["aps_axis"].get()
@@ -1228,7 +1245,8 @@ class Application(tk.Tk):
             fraction = float(self._vars["cal_fraction"].get())
             cap = float(self._vars["cal_cap"].get())
             bench = self._dm.make_testbench(axis, fraction=fraction,
-                                            accel_cap_g=cap)
+                                            accel_cap_g=cap,
+                                            geophone_max_velocity_mps=self._geophone_vmax())
         except (ValueError, RuntimeError) as e:
             messagebox.showwarning("Calibration", str(e))
             return
@@ -1251,6 +1269,9 @@ class Application(tk.Tk):
 
         bench.set_stop_event(self._stop_event)
         bench.set_logger(lambda m: self.after(0, self._set_status, m))
+        self._glog.info(f"[banc] {axis} géophone {self._vars['cal_geophone'].get()} : "
+                        f"vitesse max {self._geophone_vmax() * 1000:.1f} mm/s "
+                        f"(anti-saturation)")
 
         def _worker():
             return bench.calibration_sweep(
@@ -1476,7 +1497,8 @@ class Application(tk.Tk):
             fraction = float(self._vars["cal_fraction"].get())
             cap = float(self._vars["cal_cap"].get())
             bench = self._dm.make_testbench(axis, fraction=fraction,
-                                            accel_cap_g=cap)
+                                            accel_cap_g=cap,
+                                            geophone_max_velocity_mps=self._geophone_vmax())
         except (ValueError, RuntimeError) as e:
             messagebox.showwarning("Transfert banc", str(e))
             return
@@ -1600,7 +1622,8 @@ class Application(tk.Tk):
         try:
             fraction = float(self._vars["cal_fraction"].get())
             cap = float(self._vars["cal_cap"].get())
-            bench = self._dm.make_testbench(axis, fraction=fraction, accel_cap_g=cap)
+            bench = self._dm.make_testbench(axis, fraction=fraction, accel_cap_g=cap,
+                                            geophone_max_velocity_mps=self._geophone_vmax())
         except (ValueError, RuntimeError) as e:
             messagebox.showwarning("Vérification quotidienne", str(e))
             return
@@ -1663,7 +1686,8 @@ class Application(tk.Tk):
         try:
             fraction = float(self._vars["cal_fraction"].get())
             cap = float(self._vars["cal_cap"].get())
-            bench = self._dm.make_testbench(axis, fraction=fraction, accel_cap_g=cap)
+            bench = self._dm.make_testbench(axis, fraction=fraction, accel_cap_g=cap,
+                                            geophone_max_velocity_mps=self._geophone_vmax())
             freqs = [float(f.strip())
                      for f in self._vars["sweep_freqs"].get().split(",")]
         except (ValueError, RuntimeError) as e:
@@ -1778,7 +1802,8 @@ class Application(tk.Tk):
                     break
                 self.after(0, _set_axis_ui, ax)
                 bench = self._dm.make_testbench(ax, fraction=fraction,
-                                                accel_cap_g=cap)
+                                                accel_cap_g=cap,
+                                                geophone_max_velocity_mps=self._geophone_vmax())
                 bench.set_stop_event(self._stop_event)
                 bench.set_logger(lambda m: self.after(0, self._set_status, m))
                 bench.center_zero()
@@ -1835,10 +1860,13 @@ class Application(tk.Tk):
             cap = float(self._vars["cal_cap"].get())
             freqs = [float(f.strip())
                      for f in self._vars["sweep_freqs"].get().split(",")]
+            vmax = self._geophone_vmax()
             bench_main = self._dm.make_testbench(main_axis, fraction=fraction,
-                                                 accel_cap_g=cap)
+                                                 accel_cap_g=cap,
+                                                 geophone_max_velocity_mps=vmax)
             bench_trans = self._dm.make_testbench(trans_axis, fraction=fraction,
-                                                  accel_cap_g=cap)
+                                                  accel_cap_g=cap,
+                                                  geophone_max_velocity_mps=vmax)
         except (ValueError, RuntimeError) as e:
             messagebox.showwarning("Transversale", str(e))
             return
