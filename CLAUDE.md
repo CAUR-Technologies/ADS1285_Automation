@@ -41,7 +41,11 @@ Voir `bridge/` et `equipment/ads1285/`.
 - **Ne jamais** modifier les knobs de l'APS 125 sans refaire l'étalonnage complet
   du banc (il n'a aucune interface série : tout changement est invisible au logiciel).
 - **Toujours** vérifier l'enveloppe mécanique (`equipment/aps/shaker_physics.py`)
-  avant d'envoyer un signal : `A(f) = a/(2πf)² ≤ S_max`.
+  avant d'envoyer un signal. La cible = intersection de trois limites :
+  **déplacement** `A(f) = a/(2πf)² ≤ S_max`, **vitesse** (`v_max·2πf/g`,
+  anti-saturation du géophone, calculée par géophone dans `equipment/geophones.py`)
+  et **accélération** (plafond g). La limite de vitesse est désactivée pour le
+  transfert banc (aucun géophone monté, `bench_transfer_ignore_velocity`).
 - L'APS 0109 doit atteindre la position zéro (centrage ZER) **avant** tout signal AC.
 - Adapter la **stiffness** à la fréquence : bande passante contrôleur ≪ f_test (≥ 1 décade).
 - Stopper immédiatement toute séquence sur **overtravel** (`GES`).

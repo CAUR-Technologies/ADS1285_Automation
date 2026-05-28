@@ -245,3 +245,30 @@ Accél (g)
                 ↑
          Zone de calibration géophone ANT
 Pour un sweep de calibration propre, votre code devrait adapter l'amplitude du Wavetek à chaque fréquence pour rester à une fraction constante de cette enveloppe — typiquement 50 à 70% du maximum pour garder une marge de sécurité.
+
+## Limite de vitesse — anti-saturation du géophone
+
+L'enveloppe ci-dessus (déplacement) ne suffit pas : un géophone sort une tension
+**proportionnelle à la vitesse**, et l'enveloppe à déplacement constant fait
+**culminer la vitesse** vers quelques Hz (~0,5 m/s) — ce qui sature l'ADS1285.
+On ajoute donc une **limite de vitesse** à l'enveloppe. La cible devient le minimum
+de trois limites (`shaker_physics.target_accel_g`) :
+
+```
+cible = min( fraction·a_max(f) ,  v_max·2πf/g ,  accel_cap_g )
+            déplacement (bas f)   vitesse (mid)   accel (haut f)
+```
+
+`v_max` est calculé **par géophone** (`equipment/geophones.py`) à partir de sa
+sensibilité G [V/(m/s)], de la pleine échelle ADS1285 et du **pic de résonance**
+`|H|_max = 1/(2ζ√(1-ζ²))` (un géophone sous-amorti, ex. HG-5VHS ζ=0,268, sort
+×1,94 sa bande plate près de f0 — c'est là qu'il sature). Résultat : un **balayage
+à vitesse constante** dans la bande utile, sortie géophone bornée.
+
+⚠️ Le géophone sort une vitesse, pas une accélération : si on exprime sa réponse en
+counts/g, on mélange la vraie réponse avec un facteur 1/(2πf). Pour comparer des
+géophones, repasser en counts/(m/s) (`dsp.velocity_sensitivity`) puis ajuster le
+modèle 2ᵉ ordre `(G0, f0, ζ)` (`dsp.fit_geophone_response`).
+
+Le **transfert banc H_banc** se mesure **sans géophone monté** → limite de vitesse
+désactivée (`bench_transfer_ignore_velocity`), excitation à pleine amplitude.

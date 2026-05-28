@@ -22,9 +22,11 @@ Wavetek nécessaire (feed-forward) en plus du servo en boucle fermée.
 
 1. **Plancher de bruit** — shaker arrêté, ampli allumé, ~60 s. Établit le
    bruit de fond ; sert au calcul du SNR par point (seuil `SNR_MIN_DB` = 20 dB).
-2. **Fonction de transfert du banc `H_banc(f)`** — grille log 0,1–100 Hz.
-   Pour chaque f : enveloppe → cible (`SAFETY_MARGIN` = 0,7 du stroke,
-   plafond 1 g) → stiffness adaptée → servo amplitude → mesure `a_table`.
+2. **Fonction de transfert du banc `H_banc(f)`** — grille log (défaut GUI
+   0,1–50 Hz), **sans géophone monté**. Pour chaque f : enveloppe → cible →
+   stiffness adaptée → servo amplitude → mesure `a_table`. Comme aucun géophone
+   n'est monté, la limite de vitesse est désactivée (`bench_transfer_ignore_velocity`)
+   → excitation à pleine amplitude (course/plafond g) pour maximiser le SNR.
 3. **Linéarité** — 3 niveaux × 5 fréquences ; écart max `CAL_LINEARITY_MAX_DB` = 1 dB.
 4. **THD** — distorsion harmonique totale, seuil max `CAL_THD_MAX_PERCENT` = 3 %.
 5. **Sensibilité transversale** (cross-axis) — seuil max `CAL_CROSS_AXIS_MAX_PCT`
@@ -39,6 +41,33 @@ Wavetek nécessaire (feed-forward) en plus du servo en boucle fermée.
 - Stiffness adaptée à la fréquence (bande passante contrôleur ≪ f_test).
 - Centrage ZER avant tout signal AC ; `|ZER| + A(f) ≤ S_max`.
 - Détection cohérente obligatoire en basse fréquence (signal ≈ 1 mV à 0,0015 g).
+
+## Enveloppe d'excitation (déplacement / vitesse / accélération)
+
+L'accélération cible par fréquence est l'intersection de trois limites
+(`equipment/aps/shaker_physics.py`, `target_accel_g`) :
+
+```
+cible = min( fraction·a_max(f) ,  v_max·2πf/g ,  accel_cap_g )
+            déplacement (bas f)   vitesse (mid)   accel (haut f)
+```
+
+- **Vitesse — anti-saturation du géophone.** Le géophone sort une tension ∝ vitesse ;
+  sa sortie doit rester sous la pleine échelle ADS1285 (±2,5 V à gain 1). `v_max` est
+  calculé **par géophone** (`equipment/geophones.py`) :
+
+  ```
+  v_max = safety · V_pleine_échelle / (G · |H|_max),   |H|_max = 1/(2ζ·√(1-ζ²))
+  ```
+
+  où `|H|_max` borne le **pic de résonance** d'un géophone sous-amorti (ex. HG-5VHS,
+  ζ=0,268 → ×1,94, qui sature près de `f0` alors que la bande plate semble OK).
+  Effet : balayage à **vitesse constante** dans la bande utile, sortie géophone bornée
+  (50 % de la pleine échelle au pic par défaut, `geophone_velocity_safety`).
+- **Plancher** : un point est ignoré si `cible < accel_floor_g` (défaut 0,0002 g, bas
+  pour autoriser les géophones sensibles aux très basses fréquences ; la qualité réelle
+  est signalée par le SNR).
+- **H_banc / vérif. quotidienne** : limite de vitesse désactivée (aucun géophone monté).
 
 ## Invalidation — refaire l'étalonnage complet si
 
@@ -57,8 +86,11 @@ Si écart > `CAL_DAILY_TOL_DB` = 0,5 dB vs étalonnage de référence
 
 - Accéléromètre de référence calibré NRC Canada (ISO/IEC 17025).
 - Conserver le certificat dans `docs/calibration_certificates/`.
-- Chaque export de calibration trace le modèle de géophone (en-tête CSV /
-  clé NPZ) et la date.
+- **Sauvegarde automatique** : chaque acquisition/calibration écrit dans `data/`
+  un fichier nommé par cas et horodaté (`<cas>[_<géophone>][_<axe>]_<date>_<heure>`),
+  avec en-tête de métadonnées (géophone, date, knobs APS 125, plancher de bruit) et,
+  pour le balayage, l'ajustement `(G0, f0, ζ)` + les formes d'onde brutes par
+  fréquence. Journal des échanges : `logs/bench_<date>_<heure>.log` (un par session).
 
 ## État d'implémentation
 
@@ -75,3 +107,6 @@ Si écart > `CAL_DAILY_TOL_DB` = 0,5 dB vs étalonnage de référence
 | Vérification quotidienne (vs réf.) | `testbench.py`, `gui.py` | ✅ |
 | Campagne 2 axes (automatique) | `gui.py` | ✅ |
 | Sensibilité transversale (cross-axis) | `gui.py` | ✅ |
+| Plafond de vitesse anti-saturation par géophone | `geophones.py`, `shaker_physics.py` | ✅ |
+| Ajustement réponse géophone (G0, f0, ζ) + comparaison | `dsp.py`, `gui.py` | ✅ |
+| Sauvegarde automatique horodatée (CSV + NPZ par cas) | `datastore.py`, `gui.py` | ✅ |

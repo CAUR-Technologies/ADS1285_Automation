@@ -21,10 +21,13 @@ Tomography (ANT), via :
    — caractérise le shaker+ampli, mesurée avec l'accéléromètre de référence.
 2. **Sensibilité du géophone** `H_géo(f) = V_géo(f) / a_table(f)` [counts/g].
 
-À chaque fréquence, le logiciel : plafonne l'amplitude dans la course mécanique
-→ adapte la stiffness du contrôleur → asservit l'amplitude en boucle fermée sur
-l'accéléromètre → acquiert le géophone → arrête tout sur overtravel. Voir
-[`docs/CALIBRATION_PROTOCOL.md`](docs/CALIBRATION_PROTOCOL.md).
+À chaque fréquence, le logiciel : plafonne l'amplitude (intersection des limites
+**déplacement / vitesse / accélération** — la limite de vitesse, calculée par
+géophone, borne sa sortie pour éviter la saturation et donne un **balayage à
+vitesse constante**) → adapte la stiffness du contrôleur → asservit l'amplitude en
+boucle fermée sur l'accéléromètre → acquiert le géophone → arrête tout sur
+overtravel. Le transfert banc (sans géophone monté) excite à pleine amplitude.
+Voir [`docs/CALIBRATION_PROTOCOL.md`](docs/CALIBRATION_PROTOCOL.md).
 
 ## 📦 Architecture
 
@@ -89,11 +92,17 @@ python gui.py
 ```
 
 Interface graphique (Tkinter) — voir [`docs/GUIDE_UTILISATEUR.md`](docs/GUIDE_UTILISATEUR.md) :
-- Connexion individuelle de chaque équipement (+ sélection axe V/H, gain APS 125)
-- Sélection du géophone testé, centrage ZER, plancher de bruit
-- **Transfert banc (H_banc)** et **balayage de calibration** (sensibilité géophone)
-- Visualisation temps-réel, FFT, sensibilité et H_banc (V/H superposés)
-- Sauvegarde CSV/NPZ traçable (géophone, axe, gains, SNR, THD)
+- Connexion individuelle de chaque équipement (+ sélection axe V/H — **Horizontal
+  par défaut**, gain APS 125)
+- Sélection du géophone testé (fixe aussi le plafond de vitesse anti-saturation),
+  centrage ZER, plancher de bruit
+- **Transfert banc (H_banc)**, **balayage**, **linéarité**, **transversale**,
+  **campagne 2 axes** et **vérification quotidienne**
+- Visualisation temps-réel, FFT, sensibilité (counts/g, vitesse ou normalisé +
+  ajustement `G0/f0/ζ`), H_banc, et onglet **Comparaison** (superposition de
+  balayages sauvegardés)
+- **Sauvegarde automatique** horodatée par cas (CSV + NPZ dans `data/`), traçable
+  (géophone, axe, gains, plancher de bruit, ajustement, formes d'onde)
 
 ### Utilisation programmatique
 
@@ -127,7 +136,7 @@ sample_rate = 4000
 num_samples = 1024
 
 [APS]
-baud = 9600
+baud = 19200
 controller_vertical_port = COM3
 controller_horizontal_port = COM4
 
@@ -175,21 +184,27 @@ python -m pytest tests/
 
 ## 📊 Format de sortie
 
-Résultats sauvegardés en **CSV** (table de calibration) ou **NPZ** dans `data/`.
+**Sauvegarde automatique** : chaque acquisition et calibration écrit ses fichiers
+dans `data/`, nommés par cas et horodatés `<cas>[_<géophone>][_<axe>]_<date>_<heure>` :
+`acquisition_*`, `balayage_*`, `transfert_banc_*`, `linearite_*`,
+`verif_quotidienne_*`, `transversale_*`, `plancher_bruit_*` (CSV + NPZ selon le cas).
+Le bouton **Sauvegarder** reste disponible pour un export manuel.
 
-**CSV** (sweep géophone) : en-tête `# geophone`, `# date`,
-`# aps125_gain_vertical/horizontal`, puis une ligne par point avec colonnes
-`axis, aps125_gain, freq_hz, target_g, measured_g, vpp, stiffness,
-displacement_mm, safety_margin_mm, snr_db, thd_percent, geophone_counts_peak,
-sensitivity_counts_per_g, skipped, note`.
+**CSV (balayage)** : en-tête de métadonnées (`# geophone`, `# date`, `# axis`,
+`# aps125_gain_*`, `# noise_floor_*`, ajustement `# fit_G0_counts_per_mps / fit_f0_hz
+/ fit_zeta / fit_rms_error_db`) ; puis une ligne par point :
+`axis, aps125_gain, aps125_current_limit, freq_hz, target_g, measured_g, vpp,
+stiffness, displacement_mm, peak_velocity_mps, safety_margin_mm, snr_db, thd_percent,
+geophone_counts_peak, sensitivity_counts_per_g, skipped, note, sensitivity_counts_per_mps`.
 
-**NPZ** :
+**NPZ (balayage)** :
 ```python
 import numpy as np
-data = np.load("data/mesure_20260526_143022.npz")
-# Métadonnées : geophone, aps125_gain_vertical, aps125_gain_horizontal
-# Par axe (sweep)   : vertical_sweep_sensitivity_counts_per_g, ..._freq_hz, ...
-# Par axe (H_banc)  : vertical_hbench_freq, vertical_hbench_g_per_v, horizontal_*
+data = np.load("data/balayage_HG-5VHS_horizontal_2026-05-28_14-25-59.npz")
+# Métadonnées : geophone_model, date, aps125_*, noise_floor_*
+# Résumé      : freq_hz, summary_sensitivity_counts_per_g, *_counts_per_mps, *_normalized
+# Ajustement  : fit_G0_counts_per_mps, fit_f0_hz, fit_zeta, fit_rms_error_db
+# Temporel    : geo_wave_<f>Hz, accel_wave_<f>Hz (formes d'onde brutes par fréquence)
 ```
 
 ## ⚠️ Notes de sécurité
@@ -245,4 +260,4 @@ Pour les bugs ou questions : GitHub Issues
 
 ---
 
-**Dernière mise à jour** : Mai 2026
+**Dernière mise à jour** : 28 mai 2026
