@@ -1116,14 +1116,24 @@ class Application(tk.Tk):
 
         def _worker():
             dev = self._dm.instances["ads1285"]
+            accel_dev = (self._dm.instances.get("accel")
+                         if self._dm.connected.get("accel") else None)
+            # Accéléromètre acquis EN PARALLÈLE du géophone, sur la même durée
+            holder = {"data": None}
+            duration = count / rate
+            th = None
+            if accel_dev is not None:
+                def _acq_accel():
+                    holder["data"] = accel_dev.acquire_for(duration)
+                th = threading.Thread(target=_acq_accel)
+                th.start()
             if acq_mode == "ARM":
                 adc_data = dev.acquire_arm(count, rate)
             else:
                 adc_data = dev.acquire(count, rate)
-            accel_data = None
-            if self._dm.connected.get("accel") and self._dm.instances.get("accel"):
-                accel_data = self._dm.instances["accel"].acquire()
-            return adc_data, accel_data
+            if th is not None:
+                th.join()
+            return adc_data, holder["data"]
 
         def _on_done(result):
             adc_data, accel_data = result

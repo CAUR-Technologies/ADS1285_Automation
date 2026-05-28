@@ -19,6 +19,7 @@ coupe la sortie du Wavetek et lève TestBenchAborted.
 """
 
 import time
+import threading
 
 from equipment.aps import shaker_physics as sp
 from equipment.dsp import coherent_amplitude_peak, ratio_db, linearity_error_db
@@ -377,11 +378,10 @@ class TestBench:
                           "measured_g": res.get("measured_g", 0.0),
                           "sensitivity_counts_per_g": 0.0}
                     if not res["skipped"]:
-                        m = self._accel.measure(freq, ref_channel=self._ref_channel)
+                        # Accéléro + géophone en parallèle (même fenêtre)
+                        m, amp = self._measure_synced(freq, geophone_count, geophone_rate)
                         pt["measured_g"] = m["accel_g"]
-                        if self._ads is not None and m["accel_g"] > 1e-9:
-                            samples = self._ads.acquire(geophone_count, geophone_rate)
-                            amp = coherent_amplitude_peak(samples, freq, geophone_rate)
+                        if amp is not None and m["accel_g"] > 1e-9:
                             pt["sensitivity_counts_per_g"] = amp / m["accel_g"]
                     per_level.append(pt)
                 err = linearity_error_db([p["sensitivity_counts_per_g"]
@@ -436,6 +436,41 @@ class TestBench:
         return results
 
     # ──────────────────────────────────────────────────────────────────
+    # Mesure synchronisée accéléromètre + géophone (même fenêtre)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _measure_synced(self, freq_hz: float,
+                        geophone_count: int, geophone_rate: int):
+        """
+        Acquiert l'accéléromètre de référence (g + SNR + THD) ET le géophone
+        EN PARALLÈLE, pour qu'ils couvrent la même tranche d'excitation.
+
+        Retourne (m_accel: dict, geophone_amp: float | None).
+        """
+        holder = {"m": None, "exc": None}
+
+        def _acq_accel():
+            try:
+                holder["m"] = self._accel.measure(
+                    freq_hz, ref_channel=self._ref_channel)
+            except Exception as e:               # capturée -> re-levée après join
+                holder["exc"] = e
+
+        th = threading.Thread(target=_acq_accel)
+        th.start()
+        samples = None
+        try:
+            if self._ads is not None:
+                samples = self._ads.acquire(geophone_count, geophone_rate)
+        finally:
+            th.join()
+        if holder["exc"] is not None:
+            raise holder["exc"]
+        amp = (coherent_amplitude_peak(samples, freq_hz, geophone_rate)
+               if samples is not None else None)
+        return holder["m"], amp
+
+    # ──────────────────────────────────────────────────────────────────
     # Étape 2 : sweep de calibration géophone
     # ──────────────────────────────────────────────────────────────────
 
@@ -466,17 +501,15 @@ class TestBench:
                 res = self.set_frequency_safe(freq)
 
                 if not res["skipped"]:
-                    # Mesure de référence enrichie (g + SNR + THD) en une acquisition
-                    m = self._accel.measure(freq, ref_channel=self._ref_channel)
+                    # Accéléro + géophone EN PARALLÈLE (même fenêtre d'excitation)
+                    m, amp = self._measure_synced(freq, geophone_count, geophone_rate)
                     res["measured_g"] = m["accel_g"]
                     res["snr_db"] = m["snr_db"]
                     res["thd_percent"] = m["thd_percent"]
                     if m["snr_db"] < SNR_MIN_DB:
                         res["note"] = f"SNR {m['snr_db']:.1f} dB < {SNR_MIN_DB} dB"
 
-                    if self._ads is not None:
-                        samples = self._ads.acquire(geophone_count, geophone_rate)
-                        amp = coherent_amplitude_peak(samples, freq, geophone_rate)
+                    if amp is not None:
                         res["geophone_counts_peak"] = amp
                         res["sensitivity_counts_per_g"] = (
                             amp / res["measured_g"] if res["measured_g"] > 1e-9 else 0.0)
