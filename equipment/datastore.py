@@ -31,21 +31,25 @@ def _slug(text) -> str:
 
 
 def build_path(case: str, ext: str, *, geophone=None, axis=None,
-               ts: str | None = None) -> str:
+               freq=None, ts: str | None = None) -> str:
     """Construit (et garantit le dossier de) un chemin de fichier horodate.
 
-    case     : identifiant du cas (acquisition, balayage, ...)
+    case     : identifiant du cas (acquisition, balayage, onde, ...)
     ext      : extension sans point (csv, npz)
     geophone : modele de geophone a inclure dans le nom (optionnel)
     axis     : axe (vertical/horizontal) a inclure dans le nom (optionnel)
-    ts       : horodatage partage (sinon genere maintenant) — permet a un
-               CSV et un NPZ d'une meme execution de porter le meme suffixe.
+    freq     : frequence (Hz) a inclure dans le nom (ex. fichiers d'ondes
+               par point : 'onde_<geo>_<axe>_<freq>Hz_<ts>.npz')
+    ts       : horodatage partage (sinon genere maintenant) — permet a plusieurs
+               fichiers d'une meme execution de porter le meme suffixe.
     """
     parts = [_slug(case)]
     if geophone:
         parts.append(_slug(geophone))
     if axis:
         parts.append(_slug(axis))
+    if freq is not None:
+        parts.append(f"{freq:g}Hz")
     parts.append(ts or timestamp())
     fname = "_".join(parts) + "." + ext.lstrip(".")
     os.makedirs(DATA_OUTPUT_DIR, exist_ok=True)

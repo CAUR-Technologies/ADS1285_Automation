@@ -197,14 +197,23 @@ Le bouton **Sauvegarder** reste disponible pour un export manuel.
 stiffness, displacement_mm, peak_velocity_mps, safety_margin_mm, snr_db, thd_percent,
 geophone_counts_peak, sensitivity_counts_per_g, skipped, note, sensitivity_counts_per_mps`.
 
-**NPZ (balayage)** :
+Le **balayage** s'écrit **incrémentalement** (rien n'est perdu si la séquence
+s'interrompt) : la table CSV est complétée à chaque point, et chaque point écrit ses
+**formes d'onde brutes dans un fichier séparé** `onde_<géo>_<axe>_<freq>Hz_<ts>.npz`.
+En fin de séquence : l'ajustement `(G0, f0, ζ)` est ajouté au CSV et un NPZ résumé
+est écrit.
+
+**NPZ résumé (balayage)** — pour l'onglet Comparaison, sans formes d'onde :
 ```python
 import numpy as np
 data = np.load("data/balayage_HG-5VHS_horizontal_2026-05-28_14-25-59.npz")
 # Métadonnées : geophone_model, date, aps125_*, noise_floor_*
 # Résumé      : freq_hz, summary_sensitivity_counts_per_g, *_counts_per_mps, *_normalized
 # Ajustement  : fit_G0_counts_per_mps, fit_f0_hz, fit_zeta, fit_rms_error_db
-# Temporel    : geo_wave_<f>Hz, accel_wave_<f>Hz (formes d'onde brutes par fréquence)
+
+# Formes d'onde par point (données temporelles) :
+onde = np.load("data/onde_HG-5VHS_horizontal_10Hz_2026-05-28_14-25-59.npz")
+# geo_wave (+geo_rate), accel_wave (+accel_fs), freq_hz, sensitivity_counts_per_g, ...
 ```
 
 ## ⚠️ Notes de sécurité

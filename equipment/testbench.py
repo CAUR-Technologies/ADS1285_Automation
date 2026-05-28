@@ -48,6 +48,13 @@ class TestBenchAborted(TestBenchError):
     """Séquence interrompue (overtravel, arrêt utilisateur, hors-limite)."""
 
 
+class GeophoneAcquisitionError(TestBenchError):
+    """Échec d'acquisition du géophone (ex. crash DLL/bridge) après retentatives.
+
+    Permet d'ignorer le point fautif et de poursuivre le balayage au lieu de
+    tout interrompre."""
+
+
 class TestBench:
     """Orchestre Wavetek + APS 0109 + accéléromètre + ADS1285 (géophone)."""
 
@@ -85,6 +92,7 @@ class TestBench:
 
         self._zer_value = 0          # dernière valeur ZER appliquée (-99..99)
         self._settle_s = 4.0         # temps de stabilisation par défaut (s)
+        self._acq_retries = 1        # retentatives d'acquisition géophone sur échec
         self._stop = None            # threading.Event optionnel
         self._aps_started = False    # le contrôleur APS a-t-il reçu STA ?
         # Journalisation : fichier unifié + callback statut (GUI)
@@ -320,25 +328,46 @@ class TestBench:
         geophone_counts_peak + sensitivity_counts_per_g.
         """
         duration = geophone_count / float(geophone_rate)
-        holder = {}
 
-        def _acq_accel():
+        def _acquire_once():
+            holder = {}
+
+            def _acq_accel():
+                try:
+                    arr = self._accel.acquire_seconds(duration)
+                    ref = arr[self._ref_channel] if getattr(arr, "ndim", 1) == 2 else arr
+                    holder["sig"] = ref
+                    holder["fs"] = self._accel.sample_rate
+                except Exception as e:   # noqa: BLE001
+                    holder["err"] = e
+
+            th = threading.Thread(target=_acq_accel, daemon=True)
+            th.start()
+            geo = self._ads.acquire(geophone_count, geophone_rate) if self._ads else None
+            th.join()
+            if "err" in holder:
+                raise holder["err"]
+            return holder["sig"], holder["fs"], geo
+
+        # Retentative sur échec d'acquisition (ex. crash DLL/bridge ADS1285) :
+        # une nouvelle acquisition recharge entièrement le PSM côté bridge.
+        last_exc = None
+        for attempt in range(self._acq_retries + 1):
+            self._check_stop()
             try:
-                arr = self._accel.acquire_seconds(duration)
-                ref = arr[self._ref_channel] if getattr(arr, "ndim", 1) == 2 else arr
-                holder["sig"] = ref
-                holder["fs"] = self._accel.sample_rate
+                sig, fs, geo = _acquire_once()
+                break
             except Exception as e:   # noqa: BLE001
-                holder["err"] = e
+                last_exc = e
+                self._log(f"[banc] {freq_hz} Hz : échec acquisition "
+                          f"(essai {attempt + 1}/{self._acq_retries + 1}) : {e}")
+                if attempt < self._acq_retries:
+                    time.sleep(0.5)
+        else:
+            raise GeophoneAcquisitionError(
+                f"acquisition échouée à {freq_hz} Hz après "
+                f"{self._acq_retries + 1} essais ({last_exc})")
 
-        th = threading.Thread(target=_acq_accel, daemon=True)
-        th.start()
-        geo = self._ads.acquire(geophone_count, geophone_rate) if self._ads else None
-        th.join()
-        if "err" in holder:
-            raise holder["err"]
-
-        sig, fs = holder["sig"], holder["fs"]
         accel_g = coherent_amplitude_peak(sig, freq_hz, fs) / self._accel.sensitivity_v_per_g
         out = {
             "measured_g": accel_g,
@@ -448,12 +477,17 @@ class TestBench:
                           "measured_g": res.get("measured_g", 0.0),
                           "sensitivity_counts_per_g": 0.0}
                     if not res["skipped"]:
-                        m = self._measure_point_sync(freq, geophone_count, geophone_rate)
-                        pt["measured_g"] = m["measured_g"]
-                        pt["sensitivity_counts_per_g"] = m.get("sensitivity_counts_per_g", 0.0)
-                        for k in self._WAVE_KEYS:
-                            if k in m:
-                                pt[k] = m[k]
+                        try:
+                            m = self._measure_point_sync(freq, geophone_count, geophone_rate)
+                            pt["measured_g"] = m["measured_g"]
+                            pt["sensitivity_counts_per_g"] = m.get("sensitivity_counts_per_g", 0.0)
+                            for k in self._WAVE_KEYS:
+                                if k in m:
+                                    pt[k] = m[k]
+                        except GeophoneAcquisitionError as e:
+                            pt["skipped"] = True
+                            pt["note"] = f"acquisition échouée : {e}"
+                            self._log(f"[banc] linéarité {freq} Hz niv {lvl} IGNORÉ — {e}")
                     per_level.append(pt)
                 err = linearity_error_db([p["sensitivity_counts_per_g"]
                                           for p in per_level])
@@ -537,19 +571,26 @@ class TestBench:
                 res = self.set_frequency_safe(freq)
 
                 if not res["skipped"]:
-                    # Acquisition SIMULTANÉE géophone + accéléromètre (même fenêtre)
-                    m = self._measure_point_sync(freq, geophone_count, geophone_rate)
-                    res["measured_g"] = m["measured_g"]
-                    res["snr_db"] = m["snr_db"]
-                    res["thd_percent"] = m["thd_percent"]
-                    if "geophone_counts_peak" in m:
-                        res["geophone_counts_peak"] = m["geophone_counts_peak"]
-                        res["sensitivity_counts_per_g"] = m["sensitivity_counts_per_g"]
-                    for k in self._WAVE_KEYS:
-                        if k in m:
-                            res[k] = m[k]
-                    if m["snr_db"] < SNR_MIN_DB:
-                        res["note"] = f"SNR {m['snr_db']:.1f} dB < {SNR_MIN_DB} dB"
+                    # Acquisition SIMULTANÉE géophone + accéléromètre (même fenêtre).
+                    # Un échec d'acquisition (crash DLL/bridge) n'interrompt pas le
+                    # balayage : le point est ignoré et on poursuit.
+                    try:
+                        m = self._measure_point_sync(freq, geophone_count, geophone_rate)
+                        res["measured_g"] = m["measured_g"]
+                        res["snr_db"] = m["snr_db"]
+                        res["thd_percent"] = m["thd_percent"]
+                        if "geophone_counts_peak" in m:
+                            res["geophone_counts_peak"] = m["geophone_counts_peak"]
+                            res["sensitivity_counts_per_g"] = m["sensitivity_counts_per_g"]
+                        for k in self._WAVE_KEYS:
+                            if k in m:
+                                res[k] = m[k]
+                        if m["snr_db"] < SNR_MIN_DB:
+                            res["note"] = f"SNR {m['snr_db']:.1f} dB < {SNR_MIN_DB} dB"
+                    except GeophoneAcquisitionError as e:
+                        res["skipped"] = True
+                        res["note"] = f"acquisition échouée : {e}"
+                        self._log(f"[banc] {freq} Hz IGNORÉ — {e}")
 
                 results.append(res)
                 if on_point is not None:

@@ -88,9 +88,12 @@ Si écart > `CAL_DAILY_TOL_DB` = 0,5 dB vs étalonnage de référence
 - Conserver le certificat dans `docs/calibration_certificates/`.
 - **Sauvegarde automatique** : chaque acquisition/calibration écrit dans `data/`
   un fichier nommé par cas et horodaté (`<cas>[_<géophone>][_<axe>]_<date>_<heure>`),
-  avec en-tête de métadonnées (géophone, date, knobs APS 125, plancher de bruit) et,
-  pour le balayage, l'ajustement `(G0, f0, ζ)` + les formes d'onde brutes par
-  fréquence. Journal des échanges : `logs/bench_<date>_<heure>.log` (un par session).
+  avec en-tête de métadonnées (géophone, date, knobs APS 125, plancher de bruit). Le
+  **balayage** s'écrit **incrémentalement** : CSV de table complété à chaque point,
+  un fichier d'ondes brutes par point `onde_<géo>_<axe>_<freq>Hz_<ts>.npz`, puis en
+  fin de séquence l'ajustement `(G0, f0, ζ)` (CSV) et un NPZ résumé. Un échec
+  d'acquisition d'un point est réessayé une fois puis le point est ignoré (la
+  séquence continue). Journal : `logs/bench_<date>_<heure>.log` (un par session).
 
 ## État d'implémentation
 

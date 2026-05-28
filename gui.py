@@ -299,6 +299,7 @@ class Application(tk.Tk):
         # Resultats stockes PAR AXE (2 chaines shaker independantes V/H)
         self._sweep_results = {"vertical": {}, "horizontal": {}}  # {axe: {freq: res}}
         self._sweep_fit = {"vertical": None, "horizontal": None}  # ajustement (G0,f0,zeta)
+        self._sweep_save = {}          # contexte de sauvegarde incrémentale par axe
         self._comparison_curves = []   # réponses chargées pour l'onglet Comparaison
         self._bench_results = {"vertical": {}, "horizontal": {}}  # {axe: {freq: res}}
         self._linearity_results = {"vertical": [], "horizontal": []}  # {axe: [entry]}
@@ -1285,6 +1286,7 @@ class Application(tk.Tk):
         self._glog.info(f"[banc] {axis} géophone {self._vars['cal_geophone'].get()} : "
                         f"vitesse max {self._geophone_vmax() * 1000:.1f} mm/s "
                         f"(anti-saturation)")
+        self._sweep_save_begin(axis)   # ouvre le CSV incrémental (1 ligne/point)
 
         def _worker():
             return bench.calibration_sweep(
@@ -1297,7 +1299,7 @@ class Application(tk.Tk):
         def _on_done(results):
             self._set_busy(False)
             n_ok = sum(1 for r in results if not r.get("skipped"))
-            saved = self._autosave_sweep(axis)
+            saved = self._sweep_save_end(axis)
             self._redraw_sweep()
             msg = f"Calibration {axis} terminée — {n_ok}/{len(results)} points"
             fit = self._sweep_fit.get(axis)
@@ -1414,6 +1416,7 @@ class Application(tk.Tk):
         res["aps125_gain"] = self._aps125_gain_for(axis)
         res["aps125_current_limit"] = self._aps125_climit_for(axis)
         self._sweep_results[axis][freq] = res
+        self._sweep_save_point(axis, freq, res)   # écrit ce point (ligne + ondes)
         self._progress.configure(value=len(self._sweep_results[axis]))
 
         if res.get("skipped"):
@@ -1829,11 +1832,12 @@ class Application(tk.Tk):
                 self._sweep_results[ax] = {}
                 self.after(0, lambda n=len(freqs): self._progress.configure(
                     mode="determinate", maximum=n, value=0))
+                self.after(0, self._sweep_save_begin, ax)   # ouvre le CSV de l'axe
                 bench.calibration_sweep(
                     freqs, geophone_count=count, geophone_rate=rate,
                     on_point=lambda res, a=ax: self.after(0, self._on_sweep_point, a, res))
-                # Sauvegarde auto par axe (sur le thread principal : lit les vars tk)
-                self.after(0, self._autosave_sweep, ax)
+                # Finalise la sauvegarde incrémentale de cet axe (thread principal)
+                self.after(0, self._sweep_save_end, ax)
             return None
 
         def _on_done(_):
@@ -2366,40 +2370,86 @@ class Application(tk.Tk):
                  **save)
         return self._announce_saved("plancher_bruit", csv_path)
 
-    def _autosave_sweep(self, axis: str):
-        """Balayage de calibration : table sensibilite (CSV) + formes d'onde (NPZ)."""
-        results = self._sweep_results.get(axis, {})
-        if not results:
-            return
+    def _sweep_save_begin(self, axis: str):
+        """Ouvre la sauvegarde incrémentale du balayage : crée le CSV de table et
+        écrit son en-tête. Une ligne sera ajoutée par point (_sweep_save_point) ;
+        les formes d'onde vont dans un fichier séparé par point."""
         geophone = self._vars["cal_geophone"].get()
         ts = datastore.timestamp()
+        cols = (["axis", "aps125_gain", "aps125_current_limit"]
+                + self._SWEEP_COLUMNS + ["sensitivity_counts_per_mps"])
+        csv_path = datastore.build_path("balayage", "csv", geophone=geophone,
+                                        axis=axis, ts=ts)
+        with open(csv_path, "w", encoding="utf-8") as f:
+            for line in self._meta_header(axis):
+                f.write(f"# {line}\n")
+            f.write(",".join(cols) + "\n")
+        self._sweep_save[axis] = {"ts": ts, "geophone": geophone,
+                                  "csv": csv_path, "cols": cols}
+        self._glog.info(f"Balayage {axis} : sauvegarde incrémentale → {csv_path}")
+
+    def _sweep_save_point(self, axis: str, freq: float, res: dict):
+        """Ajoute la ligne du point au CSV, et écrit ses formes d'onde brutes
+        (données temporelles) dans un fichier séparé
+        `onde_<geophone>_<axe>_<freq>Hz_<ts>.npz`."""
+        ctx = self._sweep_save.get(axis)
+        if not ctx:
+            return
+        cols = ctx["cols"]
+        sg = res.get("sensitivity_counts_per_g")
+        sv = (float(dsp.velocity_sensitivity(np.array([sg]), np.array([freq]))[0])
+              if sg else "")
+        row = [res.get(c, "") for c in cols[:-1]] + [sv]
+        with open(ctx["csv"], "a", encoding="utf-8") as f:
+            f.write(",".join(datastore._fmt(v) for v in row) + "\n")
+        if "geo_wave" in res or "accel_wave" in res:
+            save = self._meta_npz()
+            save["axis"] = np.array(axis)
+            save["freq_hz"] = np.array(float(freq))
+            for k in ("measured_g", "sensitivity_counts_per_g",
+                      "geophone_counts_peak", "snr_db", "thd_percent"):
+                if k in res:
+                    save[k] = np.array(res[k])
+            if "geo_wave" in res:
+                save["geo_wave"] = np.asarray(res["geo_wave"])
+                save["geo_rate"] = np.array(res.get("geo_rate", 0))
+            if "accel_wave" in res:
+                save["accel_wave"] = np.asarray(res["accel_wave"])
+                save["accel_fs"] = np.array(res.get("accel_fs", 0))
+            np.savez(datastore.build_path("onde", "npz", geophone=ctx["geophone"],
+                                          axis=axis, freq=freq, ts=ctx["ts"]), **save)
+
+    def _sweep_save_end(self, axis: str):
+        """Finalise le balayage : ajustement (G0,f0,ζ) ajouté en fin de CSV, et
+        NPZ résumé (sans formes d'onde — celles-ci sont dans les fichiers onde_*)
+        pour l'onglet Comparaison. Retourne le chemin CSV."""
+        ctx = self._sweep_save.pop(axis, None)
+        if not ctx:
+            return None
+        results = self._sweep_results.get(axis, {})
         freqs = sorted(results.keys())
         fit = self._fit_axis(axis)
         self._sweep_fit[axis] = fit
-        # Sensibilité en vitesse counts/(m/s), colonne supplémentaire dans le CSV
+        if fit:
+            with open(ctx["csv"], "a", encoding="utf-8") as f:
+                f.write(f"# fit_G0_counts_per_mps: {fit['G0']:.6g}\n")
+                f.write(f"# fit_f0_hz: {fit['f0']:.4g}\n")
+                f.write(f"# fit_zeta: {fit['zeta']:.4g}\n")
+                f.write(f"# fit_rms_error_db: {fit['rms_error_db']:.3g}\n")
         sg_all = np.array([results[fr].get("sensitivity_counts_per_g", 0.0)
                            for fr in freqs], dtype=float)
-        sv_all = dsp.velocity_sensitivity(sg_all, np.array(freqs, dtype=float))
-        cols = (["axis", "aps125_gain", "aps125_current_limit"]
-                + self._SWEEP_COLUMNS + ["sensitivity_counts_per_mps"])
-        rows = []
-        for fr, sv in zip(freqs, sv_all):
-            row = [results[fr].get(c, "") for c in cols[:-1]]
-            row.append(float(sv) if results[fr].get("sensitivity_counts_per_g") else "")
-            rows.append(row)
-        header = self._meta_header(axis)
-        if fit:
-            header += [f"fit_G0_counts_per_mps: {fit['G0']:.6g}",
-                       f"fit_f0_hz: {fit['f0']:.4g}",
-                       f"fit_zeta: {fit['zeta']:.4g}",
-                       f"fit_rms_error_db: {fit['rms_error_db']:.3g}"]
-        csv_path = datastore.build_path("balayage", "csv", geophone=geophone,
-                                        axis=axis, ts=ts)
-        datastore.write_csv(csv_path, cols, rows, header_comments=header)
+        sv_all = (dsp.velocity_sensitivity(sg_all, np.array(freqs, dtype=float))
+                  if len(freqs) else np.array([]))
         save = self._meta_npz()
         save["axis"] = np.array(axis)
         save["freq_hz"] = np.array(freqs, dtype=np.float64)
         save["summary_sensitivity_counts_per_mps"] = sv_all
+        for col in self._SWEEP_COLUMNS:
+            if col == "note":
+                continue
+            save[f"summary_{col}"] = np.array(
+                [results[fr].get(col, 0) for fr in freqs],
+                dtype=np.bool_ if col == "skipped" else np.float64)
         if fit:
             save["fit_G0_counts_per_mps"] = np.array(fit["G0"])
             save["fit_f0_hz"] = np.array(fit["f0"])
@@ -2407,23 +2457,8 @@ class Application(tk.Tk):
             save["fit_rms_error_db"] = np.array(fit["rms_error_db"])
             if fit["G0"] > 0:
                 save["summary_sensitivity_normalized"] = sv_all / fit["G0"]
-        for col in self._SWEEP_COLUMNS:
-            if col == "note":
-                continue
-            save[f"summary_{col}"] = np.array(
-                [results[fr].get(col, 0) for fr in freqs],
-                dtype=np.bool_ if col == "skipped" else np.float64)
-        for fr in freqs:
-            d = results[fr]
-            if "geo_wave" in d:
-                save[f"geo_wave_{fr:g}Hz"] = np.asarray(d["geo_wave"])
-                save[f"geo_rate_{fr:g}Hz"] = np.array(d.get("geo_rate", 0))
-            if "accel_wave" in d:
-                save[f"accel_wave_{fr:g}Hz"] = np.asarray(d["accel_wave"])
-                save[f"accel_fs_{fr:g}Hz"] = np.array(d.get("accel_fs", 0))
-        np.savez(datastore.build_path("balayage", "npz", geophone=geophone,
-                                      axis=axis, ts=ts), **save)
-        return self._announce_saved("balayage", csv_path)
+        np.savez(os.path.splitext(ctx["csv"])[0] + ".npz", **save)
+        return self._announce_saved("balayage", ctx["csv"])
 
     def _autosave_bench(self, axis: str):
         """Transfert banc H_banc(f) : table (CSV, accel seul, sans geophone)."""

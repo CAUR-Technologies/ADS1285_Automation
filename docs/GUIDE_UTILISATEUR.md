@@ -101,10 +101,21 @@ Section **Calibration banc** (panneau gauche) + barre d'actions.
 
 > **Sauvegarde automatique.** Chaque acquisition et chaque calibration écrit
 > automatiquement ses fichiers dans `data/`, nommés par cas et horodatés (ex.
-> `balayage_HG-5VHS_horizontal_2026-05-28_14-25-59.csv` + `.npz`,
-> `transfert_banc_horizontal_…csv`, `plancher_bruit_…`, `acquisition_…`). Le bouton
+> `transfert_banc_horizontal_…csv`, `plancher_bruit_…`, `acquisition_…`).
+> Pour le **balayage**, l'écriture est **incrémentale** : le CSV de table
+> (`balayage_<géo>_<axe>_<ts>.csv`) est complété **à chaque point**, et chaque
+> point écrit aussitôt ses **formes d'onde brutes** dans un **fichier séparé**
+> `onde_<géo>_<axe>_<freq>Hz_<ts>.npz` (géophone + fréquence dans le nom). En fin
+> de balayage, l'ajustement `(G0, f0, ζ)` est ajouté au CSV et un NPZ résumé
+> (`balayage_…npz`, sans formes d'onde) est écrit pour l'onglet Comparaison. Ainsi
+> **rien n'est perdu** si un point échoue ou si la séquence s'interrompt. Le bouton
 > **Sauvegarder** reste disponible pour un export manuel ponctuel. Tous les échanges
 > instruments sont journalisés dans `logs/bench_<date>_<heure>.log` (un par session).
+
+> **Résilience d'acquisition.** Si l'acquisition du géophone échoue à un point
+> (ex. crash ponctuel de la DLL/bridge ADS1285), le logiciel **réessaie une fois**,
+> puis **ignore ce point** (marqué « skipped ») et **poursuit** le balayage au lieu
+> de tout interrompre.
 
 **Définir une référence** (pour la vérification quotidienne) : après un bon
 **Transfert banc**, cliquer **Définir réf.** — le H_banc de l'axe est enregistré
@@ -217,13 +228,16 @@ vpp, stiffness, displacement_mm, peak_velocity_mps, safety_margin_mm, snr_db,
 thd_percent, geophone_counts_peak, sensitivity_counts_per_g, skipped, note,
 sensitivity_counts_per_mps`.
 
-**Fichier NPZ (balayage)** : métadonnées (`geophone_model`, `date`, `aps125_*`,
-`noise_floor_*`), `axis`, `freq_hz`, les colonnes de résumé `summary_*` (dont
-`summary_sensitivity_counts_per_mps` et `summary_sensitivity_normalized`),
-l'ajustement `fit_G0_counts_per_mps / fit_f0_hz / fit_zeta / fit_rms_error_db`, et
-les **formes d'onde brutes par fréquence** `geo_wave_<f>Hz` / `accel_wave_<f>Hz`
-(données temporelles, pour ré-analyse). Les autres cas (acquisition, linéarité,
-plancher de bruit) ont leurs propres fichiers analogues.
+**NPZ résumé (balayage)** `balayage_…npz` : métadonnées (`geophone_model`, `date`,
+`aps125_*`, `noise_floor_*`), `axis`, `freq_hz`, les colonnes de résumé `summary_*`
+(dont `summary_sensitivity_counts_per_mps` et `summary_sensitivity_normalized`), et
+l'ajustement `fit_G0_counts_per_mps / fit_f0_hz / fit_zeta / fit_rms_error_db`.
+**Pas** de formes d'onde ici (légèreté + onglet Comparaison).
+
+**Fichiers d'ondes par point** `onde_<géo>_<axe>_<freq>Hz_<ts>.npz` : les **données
+temporelles brutes** d'un point — `geo_wave` (+ `geo_rate`), `accel_wave`
+(+ `accel_fs`) et les scalaires du point (`measured_g`, `sensitivity_counts_per_g`,
+`snr_db`, `thd_percent`). Un fichier par fréquence, écrit dès le point acquis.
 
 ## 10. Quand refaire l'étalonnage complet du banc
 
