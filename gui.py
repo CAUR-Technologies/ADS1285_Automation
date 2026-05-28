@@ -523,7 +523,7 @@ class Application(tk.Tk):
         sel = ttk.Frame(outer)
         sel.pack(fill="x", padx=5, pady=(6, 4))
         ttk.Label(sel, text="Axe :").pack(side="left", padx=(0, 8))
-        self._vars["aps_axis"] = tk.StringVar(value="vertical")
+        self._vars["aps_axis"] = tk.StringVar(value="horizontal")
         for val, txt in [("vertical", "Vertical"), ("horizontal", "Horizontal")]:
             ttk.Radiobutton(sel, text=txt, variable=self._vars["aps_axis"],
                             value=val,
