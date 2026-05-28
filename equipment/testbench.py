@@ -34,6 +34,7 @@ from config.settings import (
     SHAKER_SERVO_TOLERANCE,
     SHAKER_SERVO_MAX_ITER,
     SHAKER_SERVO_START_VPP,
+    SHAKER_SERVO_VPP_MAX,
 )
 from constants import SNR_MIN_DB
 
@@ -62,7 +63,7 @@ class TestBench:
                  servo_tolerance: float = SHAKER_SERVO_TOLERANCE,
                  servo_max_iter: int = SHAKER_SERVO_MAX_ITER,
                  servo_start_vpp: float = SHAKER_SERVO_START_VPP,
-                 vpp_max: float = 5.0,
+                 vpp_max: float = SHAKER_SERVO_VPP_MAX,
                  ref_channel: int = 0):
         self._wav = wavetek
         self._aps = aps
@@ -216,27 +217,35 @@ class TestBench:
         Returns (vpp_final, accel_mesurée_g).
         """
         vpp = self._servo_start_vpp
+        applied = self._servo_start_vpp
         measured = 0.0
         for i in range(self._servo_max_iter):
             self._check_stop()
-            vpp = max(0.001, min(vpp, self._vpp_max))
-            self._wav.set_amplitude(vpp)
+            applied = max(0.001, min(vpp, self._vpp_max))
+            self._wav.set_amplitude(applied)
             time.sleep(self._settle_s)
             self._check_overtravel()
             measured = self._accel.measure_acceleration_g(
                 freq_hz, ref_channel=self._ref_channel)
             if measured <= 1e-9:
-                self._log(f"[banc]   iter{i}: aucun signal, Vpp {vpp:.4f}→{vpp*2:.4f}")
-                vpp *= 2.0
+                self._log(f"[banc]   iter{i}: aucun signal, Vpp {applied:.4f}→{applied*2:.4f}")
+                vpp = applied * 2.0
                 continue
             err = (target_g - measured) / target_g
-            self._log(f"[banc]   iter{i}: Vpp={vpp:.4f} → {measured:.5f} g "
+            self._log(f"[banc]   iter{i}: Vpp={applied:.4f} → {measured:.5f} g "
                       f"(cible {target_g:.5f}, err {err*100:+.1f}%)")
             if abs(err) <= self._servo_tol:
-                return vpp, measured
-            vpp = vpp * (target_g / measured)
+                return applied, measured
+            vpp = applied * (target_g / measured)
+            # Saturation : déjà au plafond Vpp et la cible exige davantage —
+            # inutile de boucler, le gain APS 125 est le facteur limitant.
+            if vpp > self._vpp_max and applied >= self._vpp_max - 1e-9:
+                self._log(f"[banc]   SATURATION : plafond {self._vpp_max:.2f} Vpp atteint, "
+                          f"cible {target_g:.5f} g inatteignable (mesuré {measured:.5f} g). "
+                          f"Augmenter le gain APS 125 ou abaisser la cible (envelope_fraction).")
+                return applied, measured
         self._log(f"[banc]   servo non convergé après {self._servo_max_iter} iters")
-        return vpp, measured
+        return applied, measured
 
     def set_frequency_safe(self, freq_hz: float,
                            target_g: float | None = None) -> dict:

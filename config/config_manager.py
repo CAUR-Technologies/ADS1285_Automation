@@ -80,6 +80,10 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "servo_tolerance":           "0.05",   # tolerance relative (5%)
         "servo_max_iter":            "8",       # iterations max du servo
         "servo_start_vpp":           "0.1",     # amplitude Wavetek de depart (Vpp)
+        # Plafond d'amplitude Wavetek (Vpp). Au-dela, le servo declare la cible
+        # inatteignable a ce gain APS 125 (sortie anticipee). 10 Vpp = sortie
+        # typique max du 39A sur charge ouverte.
+        "servo_vpp_max":             "10.0",
         # Modele de geophone candidat en cours de test (metadonnee calibration)
         "geophone":                  "HG-5VHS",
     },
