@@ -94,6 +94,34 @@ def test_linearity_error_db():
     assert dsp.linearity_error_db([]) == 0.0
 
 
+def test_velocity_sensitivity():
+    # S_v = S_g · 2πf / g  ; à f donné, conversion exacte
+    f = np.array([1.0, 10.0, 100.0])
+    sg = np.array([2.0, 2.0, 2.0])
+    sv = dsp.velocity_sensitivity(sg, f)
+    expected = sg * 2 * np.pi * f / 9.80665
+    assert np.allclose(sv, expected)
+
+
+def test_fit_geophone_response_roundtrip():
+    # Synthétise une réponse géophone connue, ajoute un peu de bruit, ré-ajuste.
+    f = np.logspace(-1, 2, 25)  # 0.1 .. 100 Hz
+    G0, f0, zeta = 5.0e5, 4.5, 0.6
+    sv = dsp.geophone_velocity_response(f, G0, f0, zeta)
+    rng = np.random.default_rng(0)
+    sv_noisy = sv * (1.0 + 0.02 * rng.standard_normal(len(f)))  # 2% de bruit
+    fit = dsp.fit_geophone_response(f, sv_noisy)
+    assert fit is not None
+    assert approx(fit["f0"], f0, tol=0.05)
+    assert approx(fit["zeta"], zeta, tol=0.10)
+    assert approx(fit["G0"], G0, tol=0.05)
+    assert fit["rms_error_db"] < 1.0
+
+
+def test_fit_geophone_response_too_few_points():
+    assert dsp.fit_geophone_response([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]) is None
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

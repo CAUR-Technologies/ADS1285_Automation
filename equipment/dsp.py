@@ -77,6 +77,100 @@ def linearity_error_db(values) -> float:
     return float(20.0 * np.log10(max(vals) / min(vals)))
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Réponse en fréquence d'un géophone (capteur de vitesse) — comparaison
+# ─────────────────────────────────────────────────────────────────────────
+
+G_ACCEL = 9.80665  # m/s² par g
+
+
+def velocity_sensitivity(sens_counts_per_g, freqs):
+    """
+    Convertit une sensibilité en counts/g (par accélération) vers une
+    sensibilité en counts/(m/s) (par vitesse).
+
+    Un géophone est un capteur de VITESSE ; le banc impose une ACCÉLÉRATION.
+    Pour un sinus, v = a/(2πf), donc :
+
+        S_v [counts/(m/s)] = S_g [counts/g] · 2πf / g
+
+    Cette conversion retire le facteur 1/f artificiel et révèle la vraie
+    réponse du géophone (plate au-dessus de f0, roll-off en f² en dessous).
+    Indispensable pour comparer correctement des géophones entre eux.
+    """
+    s = np.asarray(sens_counts_per_g, dtype=np.float64)
+    f = np.asarray(freqs, dtype=np.float64)
+    return s * 2.0 * np.pi * f / G_ACCEL
+
+
+def geophone_velocity_response(freqs, G0: float, f0: float, zeta: float):
+    """
+    Magnitude de la réponse vitesse d'un géophone (modèle 2ᵉ ordre) :
+
+        |S_v(f)| = G0 · r² / √[ (1-r²)² + (2ζr)² ]   avec r = f/f0
+
+    G0   : sensibilité de bande plate (asymptote haute fréquence)
+    f0   : fréquence propre (corner)
+    zeta : amortissement (≈ 0,6–0,7 du critique pour un géophone usuel)
+    """
+    f = np.asarray(freqs, dtype=np.float64)
+    r = f / f0
+    return G0 * r ** 2 / np.sqrt((1.0 - r ** 2) ** 2 + (2.0 * zeta * r) ** 2)
+
+
+def fit_geophone_response(freqs, sens_velocity):
+    """
+    Ajuste le modèle géophone 2ᵉ ordre sur une réponse vitesse mesurée et
+    retourne (G0, f0, zeta) + l'erreur résiduelle.
+
+    L'ajustement se fait en échelle log (dB) pour pondérer également toutes
+    les décades. Requiert ≥ 4 points valides et scipy ; retourne None sinon.
+
+    Returns dict {G0, f0, zeta, rms_error_db, n} ou None.
+    """
+    f = np.asarray(freqs, dtype=np.float64)
+    s = np.asarray(sens_velocity, dtype=np.float64)
+    mask = (f > 0) & (s > 0) & np.isfinite(f) & np.isfinite(s)
+    f, s = f[mask], s[mask]
+    if len(f) < 4:
+        return None
+    try:
+        from scipy.optimize import curve_fit
+    except ImportError:
+        return None
+
+    order = np.argsort(f)
+    f, s = f[order], s[order]
+    # Estimations initiales : G0 ≈ plateau (tiers haute fréquence),
+    # f0 ≈ point à -3 dB, zeta ≈ 0,6.
+    g0_init = float(np.median(s[-max(1, len(s) // 3):]))
+    target = g0_init / np.sqrt(2.0)
+    f0_init = float(f[int(np.argmin(np.abs(s - target)))])
+    if not np.isfinite(f0_init) or f0_init <= 0:
+        f0_init = float(np.sqrt(f[0] * f[-1]))
+
+    def _log_model(ff, g0, f0, zeta):
+        return np.log10(geophone_velocity_response(ff, g0, f0, zeta))
+
+    bounds = ([1e-12, f.min() * 0.1, 0.05], [np.inf, f.max() * 5.0, 2.0])
+    try:
+        popt, _ = curve_fit(_log_model, f, np.log10(s),
+                            p0=[g0_init, f0_init, 0.6],
+                            bounds=bounds, maxfev=20000)
+    except Exception:
+        return None
+    g0, f0, zeta = float(popt[0]), float(popt[1]), float(popt[2])
+    model = geophone_velocity_response(f, g0, f0, zeta)
+    resid_db = 20.0 * np.log10(model / s)
+    return {
+        "G0": g0,
+        "f0": f0,
+        "zeta": zeta,
+        "rms_error_db": float(np.sqrt(np.mean(resid_db ** 2))),
+        "n": int(len(f)),
+    }
+
+
 def thd_percent(signal, freq_hz: float, fs: float, n_harmonics: int = 5) -> float:
     """
     Distorsion harmonique totale (%) : sqrt(Σ A_k²) / A_1 × 100, k=2..n.

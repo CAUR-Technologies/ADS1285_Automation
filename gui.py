@@ -44,6 +44,7 @@ from equipment.wavetek import Wavetek39A
 from equipment.aps import APSController
 from equipment.testbench import TestBench, TestBenchAborted
 from equipment.instrlog import get_logger
+from equipment import dsp
 import equipment.datastore as datastore
 
 # Dossier des references H_banc (vérification quotidienne)
@@ -290,6 +291,8 @@ class Application(tk.Tk):
         self._last_rate = ADS1285_SAMPLE_RATE
         # Resultats stockes PAR AXE (2 chaines shaker independantes V/H)
         self._sweep_results = {"vertical": {}, "horizontal": {}}  # {axe: {freq: res}}
+        self._sweep_fit = {"vertical": None, "horizontal": None}  # ajustement (G0,f0,zeta)
+        self._comparison_curves = []   # réponses chargées pour l'onglet Comparaison
         self._bench_results = {"vertical": {}, "horizontal": {}}  # {axe: {freq: res}}
         self._linearity_results = {"vertical": [], "horizontal": []}  # {axe: [entry]}
         self._cross_results = {}       # {freq: entry} sensibilité transversale
@@ -663,6 +666,14 @@ class Application(tk.Tk):
         # Onglet Balayage
         tab_sweep = ttk.Frame(self._notebook)
         self._notebook.add(tab_sweep, text="  Balayage  ")
+        sweep_ctrl = ttk.Frame(tab_sweep)
+        sweep_ctrl.pack(fill="x")
+        ttk.Label(sweep_ctrl, text="Affichage :").pack(side="left", padx=(4, 2))
+        self._vars["sweep_view"] = tk.StringVar(value=self._SWEEP_VIEWS[0])
+        cb = ttk.Combobox(sweep_ctrl, textvariable=self._vars["sweep_view"],
+                          state="readonly", width=22, values=self._SWEEP_VIEWS)
+        cb.pack(side="left")
+        cb.bind("<<ComboboxSelected>>", lambda e: self._redraw_sweep())
         self._fig_sweep = Figure(figsize=(8, 5), dpi=100)
         self._ax_sweep = self._fig_sweep.add_subplot(111)
         self._ax_sweep.set_title("Sensibilite geophone vs frequence")
@@ -722,6 +733,34 @@ class Application(tk.Tk):
         self._canvas_cross.get_tk_widget().pack(fill="both", expand=True)
         self._toolbar_cross = NavigationToolbar2Tk(self._canvas_cross, tab_cross)
         self._toolbar_cross.update()
+
+        # Onglet Comparaison (superposition de réponses sauvegardées)
+        tab_comp = ttk.Frame(self._notebook)
+        self._notebook.add(tab_comp, text="  Comparaison  ")
+        comp_ctrl = ttk.Frame(tab_comp)
+        comp_ctrl.pack(fill="x")
+        ttk.Button(comp_ctrl, text="Charger des balayages…",
+                   command=self._load_comparison).pack(side="left", padx=3, pady=2)
+        ttk.Button(comp_ctrl, text="Effacer",
+                   command=self._clear_comparison).pack(side="left", padx=3)
+        ttk.Label(comp_ctrl, text="Affichage :").pack(side="left", padx=(12, 2))
+        self._vars["comp_view"] = tk.StringVar(value=self._COMP_VIEWS[0])
+        cbc = ttk.Combobox(comp_ctrl, textvariable=self._vars["comp_view"],
+                           state="readonly", width=22, values=self._COMP_VIEWS)
+        cbc.pack(side="left")
+        cbc.bind("<<ComboboxSelected>>", lambda e: self._redraw_comparison())
+        self._fig_comp = Figure(figsize=(8, 5), dpi=100)
+        self._ax_comp = self._fig_comp.add_subplot(111)
+        self._ax_comp.set_title("Comparaison de reponses en frequence")
+        self._ax_comp.set_xlabel("Frequence (Hz)")
+        self._ax_comp.set_ylabel("Reponse normalisee (/G0)")
+        self._ax_comp.set_xscale("log")
+        self._ax_comp.grid(True, which="both", linestyle="--", alpha=0.5)
+        self._fig_comp.tight_layout()
+        self._canvas_comp = FigureCanvasTkAgg(self._fig_comp, master=tab_comp)
+        self._canvas_comp.get_tk_widget().pack(fill="both", expand=True)
+        self._toolbar_comp = NavigationToolbar2Tk(self._canvas_comp, tab_comp)
+        self._toolbar_comp.update()
 
     # ---------------------------------------------------------------
     # Barre d'actions
@@ -1224,7 +1263,12 @@ class Application(tk.Tk):
             self._set_busy(False)
             n_ok = sum(1 for r in results if not r.get("skipped"))
             saved = self._autosave_sweep(axis)
+            self._redraw_sweep()
             msg = f"Calibration {axis} terminée — {n_ok}/{len(results)} points"
+            fit = self._sweep_fit.get(axis)
+            if fit:
+                msg += (f" · f0={fit['f0']:.2f}Hz ζ={fit['zeta']:.2f} "
+                        f"(±{fit['rms_error_db']:.2f}dB)")
             if saved:
                 msg += f" · {os.path.basename(saved)}"
             self._set_status(msg)
@@ -1244,6 +1288,90 @@ class Application(tk.Tk):
         "horizontal": ("tab:red", "s-", "H"),
     }
 
+    # Modes d'affichage de la réponse géophone (onglets Balayage / Comparaison)
+    _SWEEP_VIEWS = ["counts/g (brut)", "counts/(m/s) (vitesse)", "Normalisé (/G0)"]
+    _COMP_VIEWS = ["Normalisé (/G0)", "counts/(m/s) (vitesse)"]
+
+    @staticmethod
+    def _sweep_view_mode(view: str) -> str:
+        """Mappe le libellé de la combobox vers un mode interne."""
+        if "vitesse" in view:
+            return "velocity"
+        if "Normalis" in view:
+            return "norm"
+        return "raw"
+
+    def _fit_axis(self, axis: str):
+        """Ajuste le modèle géophone (G0,f0,zeta) sur la réponse vitesse d'un axe.
+
+        Retourne le dict d'ajustement ou None (< 4 points / scipy absent)."""
+        results = self._sweep_results.get(axis, {})
+        fdone = sorted(f for f in results
+                       if results[f].get("sensitivity_counts_per_g"))
+        if len(fdone) < 4:
+            return None
+        farr = np.array(fdone, dtype=float)
+        sg = np.array([results[f]["sensitivity_counts_per_g"] for f in fdone])
+        sv = dsp.velocity_sensitivity(sg, farr)
+        return dsp.fit_geophone_response(farr, sv)
+
+    def _redraw_sweep(self):
+        """Retrace l'onglet Balayage selon le mode d'affichage choisi
+        (counts/g, vitesse, ou normalisé), avec overlay du modèle ajusté."""
+        mode = self._sweep_view_mode(self._vars["sweep_view"].get())
+        geophone = self._vars["cal_geophone"].get()
+        ax = self._ax_sweep
+        ax.clear()
+        ax.set_xscale("log")
+        ax.grid(True, which="both", linestyle="--", alpha=0.5)
+        ax.set_xlabel("Frequence (Hz)")
+        if mode == "raw":
+            ax.set_yscale("linear")
+            ax.set_ylabel("Sensibilite (counts/g)")
+        elif mode == "velocity":
+            ax.set_yscale("log")
+            ax.set_ylabel("Sensibilite (counts/(m/s))")
+        else:
+            ax.set_yscale("log")
+            ax.set_ylabel("Reponse normalisee (/G0)")
+        ax.set_title(f"Reponse geophone vs frequence — {geophone}")
+
+        plotted = False
+        for ax_name, results in self._sweep_results.items():
+            fdone = sorted(f for f in results
+                           if results[f].get("sensitivity_counts_per_g"))
+            if not fdone:
+                continue
+            color, style, lbl = self._AXIS_STYLE[ax_name]
+            farr = np.array(fdone, dtype=float)
+            sg = np.array([results[f]["sensitivity_counts_per_g"] for f in fdone])
+            sv = dsp.velocity_sensitivity(sg, farr)
+            fit = self._fit_axis(ax_name)
+            self._sweep_fit[ax_name] = fit
+            if mode == "raw":
+                y = sg
+            elif mode == "velocity":
+                y = sv
+            else:
+                g0 = fit["G0"] if fit else float(np.max(sv))
+                y = sv / g0 if g0 > 0 else sv
+            label = lbl
+            if fit:
+                label = f"{lbl}  f0={fit['f0']:.2f}Hz ζ={fit['zeta']:.2f}"
+            ax.plot(farr, y, style, color=color, label=label)
+            plotted = True
+            # Overlay du modèle ajusté (modes vitesse / normalisé)
+            if fit and mode in ("velocity", "norm"):
+                fg = np.logspace(np.log10(farr.min()), np.log10(farr.max()), 200)
+                mv = dsp.geophone_velocity_response(fg, fit["G0"], fit["f0"],
+                                                    fit["zeta"])
+                my = mv if mode == "velocity" else mv / fit["G0"]
+                ax.plot(fg, my, "-", color=color, alpha=0.4, linewidth=1)
+        if plotted:
+            ax.legend(fontsize=8)
+        self._fig_sweep.tight_layout()
+        self._canvas_sweep.draw_idle()
+
     def _on_sweep_point(self, axis: str, res: dict):
         freq = res["freq_hz"]
         # Tracer l'axe + les knobs ampli dans le résultat (traçabilité)
@@ -1261,28 +1389,8 @@ class Application(tk.Tk):
                 f"STF {res['stiffness']}, dépl. {res['displacement_mm']:.2f} mm, "
                 f"marge {res['safety_margin_mm']:.1f} mm")
 
-        # Graphe sensibilité géophone (counts/g) vs fréquence — V et H superposés
-        self._ax_sweep.clear()
-        geophone = self._vars["cal_geophone"].get()
-        self._ax_sweep.set_title(f"Sensibilite geophone vs frequence — {geophone}")
-        self._ax_sweep.set_xlabel("Frequence (Hz)")
-        self._ax_sweep.set_ylabel("Sensibilite (counts/g)")
-        self._ax_sweep.set_xscale("log")
-        self._ax_sweep.grid(True, which="both", linestyle="--", alpha=0.5)
-        plotted = False
-        for ax_name, results in self._sweep_results.items():
-            fdone = sorted(f for f in results
-                           if results[f].get("sensitivity_counts_per_g"))
-            if not fdone:
-                continue
-            color, style, lbl = self._AXIS_STYLE[ax_name]
-            sens = [results[f]["sensitivity_counts_per_g"] for f in fdone]
-            self._ax_sweep.plot(fdone, sens, style, color=color, label=lbl)
-            plotted = True
-        if plotted:
-            self._ax_sweep.legend()
-        self._fig_sweep.tight_layout()
-        self._canvas_sweep.draw_idle()
+        # Graphe réponse géophone vs fréquence (mode d'affichage courant)
+        self._redraw_sweep()
 
     def _center_zero(self):
         """Lance le centrage ZER statique du contrôleur APS de l'axe actif."""
@@ -1823,6 +1931,75 @@ class Application(tk.Tk):
         self._fig_cross.tight_layout()
         self._canvas_cross.draw_idle()
 
+    # ---- Comparaison de réponses sauvegardées (onglet Comparaison) ----
+
+    def _load_comparison(self):
+        """Charge un ou plusieurs balayages NPZ et superpose leurs réponses."""
+        paths = filedialog.askopenfilenames(
+            initialdir=DATA_OUTPUT_DIR,
+            title="Choisir des balayages (.npz)",
+            filetypes=[("Balayage NumPy", "*.npz")])
+        loaded = 0
+        for p in paths:
+            try:
+                d = np.load(p, allow_pickle=True)
+                f = np.asarray(d["freq_hz"], dtype=float)
+                sg = np.asarray(d["summary_sensitivity_counts_per_g"], dtype=float)
+            except Exception as e:                      # noqa: BLE001
+                messagebox.showwarning(
+                    "Comparaison",
+                    f"{os.path.basename(p)} illisible ou incompatible : {e}")
+                continue
+            mask = (f > 0) & (sg > 0) & np.isfinite(f) & np.isfinite(sg)
+            f, sg = f[mask], sg[mask]
+            if len(f) == 0:
+                continue
+            sv = dsp.velocity_sensitivity(sg, f)
+            model = str(d["geophone_model"]) if "geophone_model" in d.files else "?"
+            axis = str(d["axis"]) if "axis" in d.files else ""
+            label = (f"{model} {axis}".strip()
+                     + f"  [{os.path.basename(p)}]")
+            self._comparison_curves.append({
+                "label": label, "f": f, "sv": sv,
+                "fit": dsp.fit_geophone_response(f, sv)})
+            loaded += 1
+        if loaded:
+            self._redraw_comparison()
+            self._set_status(f"Comparaison : {loaded} reponse(s) chargee(s) "
+                             f"({len(self._comparison_curves)} au total)")
+
+    def _clear_comparison(self):
+        self._comparison_curves = []
+        self._redraw_comparison()
+        self._set_status("Comparaison effacee")
+
+    def _redraw_comparison(self):
+        norm = "Normalis" in self._vars["comp_view"].get()
+        ax = self._ax_comp
+        ax.clear()
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.grid(True, which="both", linestyle="--", alpha=0.5)
+        ax.set_xlabel("Frequence (Hz)")
+        ax.set_ylabel("Reponse normalisee (/G0)" if norm
+                      else "Sensibilite (counts/(m/s))")
+        ax.set_title("Comparaison de reponses en frequence")
+        cmap = plt.get_cmap("tab10")
+        for i, c in enumerate(self._comparison_curves):
+            color = cmap(i % 10)
+            y = c["sv"]
+            if norm:
+                g0 = c["fit"]["G0"] if c["fit"] else float(np.max(c["sv"]))
+                y = c["sv"] / g0 if g0 > 0 else c["sv"]
+            label = c["label"]
+            if c["fit"]:
+                label += f"  f0={c['fit']['f0']:.2f} ζ={c['fit']['zeta']:.2f}"
+            ax.plot(c["f"], y, "o-", color=color, ms=4, label=label)
+        if self._comparison_curves:
+            ax.legend(fontsize=7)
+        self._fig_comp.tight_layout()
+        self._canvas_comp.draw_idle()
+
     def _do_stop(self):
         self._stop_event.set()
         self._set_status("Arret demande...")
@@ -2115,16 +2292,39 @@ class Application(tk.Tk):
         geophone = self._vars["cal_geophone"].get()
         ts = datastore.timestamp()
         freqs = sorted(results.keys())
+        fit = self._fit_axis(axis)
+        self._sweep_fit[axis] = fit
+        # Sensibilité en vitesse counts/(m/s), colonne supplémentaire dans le CSV
+        sg_all = np.array([results[fr].get("sensitivity_counts_per_g", 0.0)
+                           for fr in freqs], dtype=float)
+        sv_all = dsp.velocity_sensitivity(sg_all, np.array(freqs, dtype=float))
         cols = (["axis", "aps125_gain", "aps125_current_limit"]
-                + self._SWEEP_COLUMNS)
-        rows = [[results[fr].get(c, "") for c in cols] for fr in freqs]
+                + self._SWEEP_COLUMNS + ["sensitivity_counts_per_mps"])
+        rows = []
+        for fr, sv in zip(freqs, sv_all):
+            row = [results[fr].get(c, "") for c in cols[:-1]]
+            row.append(float(sv) if results[fr].get("sensitivity_counts_per_g") else "")
+            rows.append(row)
+        header = self._meta_header(axis)
+        if fit:
+            header += [f"fit_G0_counts_per_mps: {fit['G0']:.6g}",
+                       f"fit_f0_hz: {fit['f0']:.4g}",
+                       f"fit_zeta: {fit['zeta']:.4g}",
+                       f"fit_rms_error_db: {fit['rms_error_db']:.3g}"]
         csv_path = datastore.build_path("balayage", "csv", geophone=geophone,
                                         axis=axis, ts=ts)
-        datastore.write_csv(csv_path, cols, rows,
-                            header_comments=self._meta_header(axis))
+        datastore.write_csv(csv_path, cols, rows, header_comments=header)
         save = self._meta_npz()
         save["axis"] = np.array(axis)
         save["freq_hz"] = np.array(freqs, dtype=np.float64)
+        save["summary_sensitivity_counts_per_mps"] = sv_all
+        if fit:
+            save["fit_G0_counts_per_mps"] = np.array(fit["G0"])
+            save["fit_f0_hz"] = np.array(fit["f0"])
+            save["fit_zeta"] = np.array(fit["zeta"])
+            save["fit_rms_error_db"] = np.array(fit["rms_error_db"])
+            if fit["G0"] > 0:
+                save["summary_sensitivity_normalized"] = sv_all / fit["G0"]
         for col in self._SWEEP_COLUMNS:
             if col == "note":
                 continue
