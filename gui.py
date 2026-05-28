@@ -37,6 +37,7 @@ from config.settings import (
     NI_REF_CHANNEL_VERTICAL, NI_REF_CHANNEL_HORIZONTAL,
     SHAKER_ENVELOPE_FRACTION, SHAKER_ACCEL_CAP_G, SHAKER_GEOPHONE,
     SHAKER_GEOPHONE_MAX_VELOCITY_MPS, SHAKER_GEOPHONE_VELOCITY_SAFETY,
+    SHAKER_BENCH_IGNORE_VELOCITY,
     ADS1285_FULL_SCALE_VPEAK,
     DATA_OUTPUT_DIR,
 )
@@ -1238,6 +1239,14 @@ class Application(tk.Tk):
             safety=SHAKER_GEOPHONE_VELOCITY_SAFETY,
             fallback=SHAKER_GEOPHONE_MAX_VELOCITY_MPS)
 
+    def _bench_vmax(self) -> float:
+        """Vitesse max pour le transfert banc / vérif. quotidienne.
+
+        0 (limite désactivée) si aucun géophone n'est monté pendant
+        l'étalonnage du banc (bench_transfer_ignore_velocity) → excitation à
+        pleine amplitude pour un meilleur SNR de H_banc. Sinon plafond géophone."""
+        return 0.0 if SHAKER_BENCH_IGNORE_VELOCITY else self._geophone_vmax()
+
     def _do_sweep(self):
         """Sweep de calibration géophone piloté par le TestBench (banc complet)."""
         axis = self._vars["aps_axis"].get()
@@ -1498,7 +1507,7 @@ class Application(tk.Tk):
             cap = float(self._vars["cal_cap"].get())
             bench = self._dm.make_testbench(axis, fraction=fraction,
                                             accel_cap_g=cap,
-                                            geophone_max_velocity_mps=self._geophone_vmax())
+                                            geophone_max_velocity_mps=self._bench_vmax())
         except (ValueError, RuntimeError) as e:
             messagebox.showwarning("Transfert banc", str(e))
             return
@@ -1517,6 +1526,12 @@ class Application(tk.Tk):
 
         bench.set_stop_event(self._stop_event)
         bench.set_logger(lambda m: self.after(0, self._set_status, m))
+        if SHAKER_BENCH_IGNORE_VELOCITY:
+            self._glog.info(f"[banc] transfert {axis} : limite de vitesse IGNORÉE "
+                            f"(aucun géophone monté) — excitation pleine amplitude")
+        else:
+            self._glog.info(f"[banc] transfert {axis} : vitesse max "
+                            f"{self._bench_vmax() * 1000:.1f} mm/s")
 
         def _worker():
             return bench.measure_bench_transfer(
@@ -1623,7 +1638,7 @@ class Application(tk.Tk):
             fraction = float(self._vars["cal_fraction"].get())
             cap = float(self._vars["cal_cap"].get())
             bench = self._dm.make_testbench(axis, fraction=fraction, accel_cap_g=cap,
-                                            geophone_max_velocity_mps=self._geophone_vmax())
+                                            geophone_max_velocity_mps=self._bench_vmax())
         except (ValueError, RuntimeError) as e:
             messagebox.showwarning("Vérification quotidienne", str(e))
             return

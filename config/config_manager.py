@@ -87,6 +87,10 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         # Fraction de la pleine echelle ADC visee au pic de reponse du geophone
         # (marge anti-saturation : 0,5 = sortie max a 50 % de la pleine echelle).
         "geophone_velocity_safety":  "0.5",
+        # Ignorer la limite de vitesse pour le transfert banc / verif quotidienne.
+        # true : aucun geophone monte pendant l'etalonnage du banc -> exciter a
+        # pleine amplitude (enveloppe stroke/accel) pour un meilleur SNR de H_banc.
+        "bench_transfer_ignore_velocity": "true",
         # Sensibilite chaine accelerometre NI : Silicon Designs 2240-005 = 800 mV/g.
         # Si la boite Spektra applique un gain, ajuster cette valeur.
         "accel_sensitivity_v_per_g": "0.8",
