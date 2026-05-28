@@ -557,11 +557,12 @@ class Application(tk.Tk):
         fa = ttk.Frame(outer)
         fa.pack(fill="x", padx=8, pady=(3, 6))
         fa.columnconfigure(1, weight=1)
-        self._row(fa, "Gain (dB) :",
+        self._row(fa, "Gain (dB/pos.) :",
                   self._make_var("aps125_gain", self._aps125_gains["vertical"]), 0)
         self._row(fa, "Limite courant (A RMS) :",
                   self._make_var("aps125_climit", self._aps125_climits["vertical"]), 1)
-        ttk.Label(outer, text="(knobs saisis à la main, tracés avec l'étalonnage)",
+        ttk.Label(outer, text="(knobs manuels, tracés avec l'étalonnage ; "
+                  "si pas de graduation, noter la position ex. « 50% »)",
                   font=("", 8)).pack(anchor="w", padx=8, pady=(0, 4))
 
     def _on_aps_axis_change(self):
