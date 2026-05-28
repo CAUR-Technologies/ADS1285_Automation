@@ -1,5 +1,5 @@
 """
-Journal unifié du banc -> logs/bench.log.
+Journal unifié du banc -> logs/bench_<date>_<heure>.log (un par exécution).
 
 Une seule destination, avec une colonne 'source' (APS, Wavetek, ADS1285,
 TestBench, GUI…). Trace les échanges (TX/RX, niveau DEBUG) et surtout les
@@ -13,10 +13,13 @@ bridge/bridge32.log — il ne partage pas ce process.
 
 import os
 import logging
+from datetime import datetime
 
 _LOG_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
-_LOG_FILE = os.path.join(_LOG_DIR, "bench.log")
+# Un nouveau fichier horodaté par exécution (pas de ':' — interdit sous Windows).
+_LOG_FILE = os.path.join(
+    _LOG_DIR, datetime.now().strftime("bench_%Y-%m-%d_%H-%M-%S.log"))
 _ROOT_NAME = "bench"
 _configured = False
 
