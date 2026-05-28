@@ -44,6 +44,7 @@ from equipment.wavetek import Wavetek39A
 from equipment.aps import APSController
 from equipment.testbench import TestBench, TestBenchAborted
 from equipment.instrlog import get_logger
+import equipment.datastore as datastore
 
 # Dossier des references H_banc (vérification quotidienne)
 _REF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference")
@@ -1148,7 +1149,11 @@ class Application(tk.Tk):
             self._progress.stop()
             self._progress.configure(mode="determinate", value=0)
             self._set_busy(False)
-            self._set_status(f"{len(adc_data)} echantillons acquis")
+            saved = self._autosave_acquisition()
+            msg = f"{len(adc_data)} echantillons acquis"
+            if saved:
+                msg += f" · {os.path.basename(saved)}"
+            self._set_status(msg)
             self._update_time_plot()
             self._update_fft_plot()
             self._notebook.select(0)  # aller sur l'onglet Temporel
@@ -1218,7 +1223,11 @@ class Application(tk.Tk):
         def _on_done(results):
             self._set_busy(False)
             n_ok = sum(1 for r in results if not r.get("skipped"))
-            self._set_status(f"Calibration {axis} terminée — {n_ok}/{len(results)} points")
+            saved = self._autosave_sweep(axis)
+            msg = f"Calibration {axis} terminée — {n_ok}/{len(results)} points"
+            if saved:
+                msg += f" · {os.path.basename(saved)}"
+            self._set_status(msg)
 
         def _on_err(exc):
             self._set_busy(False)
@@ -1377,7 +1386,11 @@ class Application(tk.Tk):
         def _on_done(results):
             self._set_busy(False)
             n_ok = sum(1 for r in results if not r.get("skipped"))
-            self._set_status(f"Transfert banc {axis} terminé — {n_ok}/{len(results)} points")
+            saved = self._autosave_bench(axis)
+            msg = f"Transfert banc {axis} terminé — {n_ok}/{len(results)} points"
+            if saved:
+                msg += f" · {os.path.basename(saved)}"
+            self._set_status(msg)
 
         def _on_err(exc):
             self._set_busy(False)
@@ -1491,8 +1504,12 @@ class Application(tk.Tk):
             valid = [r for r in results if not r.get("skipped")]
             ok = all(r.get("pass") for r in valid)
             worst = max((abs(r.get("deviation_db", 0)) for r in valid), default=0.0)
-            self._set_status(f"Vérif. {axis} : écart max {worst:.2f} dB — "
-                             + ("OK" if ok else "DÉRIVE"))
+            saved = self._autosave_daily(axis)
+            msg = (f"Vérif. {axis} : écart max {worst:.2f} dB — "
+                   + ("OK" if ok else "DÉRIVE"))
+            if saved:
+                msg += f" · {os.path.basename(saved)}"
+            self._set_status(msg)
             if not ok:
                 messagebox.showwarning("Vérification quotidienne",
                     f"Dérive détectée (écart max {worst:.2f} dB > "
@@ -1552,8 +1569,12 @@ class Application(tk.Tk):
             self._set_busy(False)
             ok = all(e["pass"] for e in results)
             worst = max((e["linearity_error_db"] for e in results), default=0.0)
-            self._set_status(f"Linéarité {axis} : erreur max {worst:.2f} dB — "
-                             + ("OK" if ok else "HORS TOL"))
+            saved = self._autosave_linearity(axis)
+            msg = (f"Linéarité {axis} : erreur max {worst:.2f} dB — "
+                   + ("OK" if ok else "HORS TOL"))
+            if saved:
+                msg += f" · {os.path.basename(saved)}"
+            self._set_status(msg)
 
         def _on_err(exc):
             self._set_busy(False)
@@ -1648,6 +1669,8 @@ class Application(tk.Tk):
                 bench.calibration_sweep(
                     freqs, geophone_count=count, geophone_rate=rate,
                     on_point=lambda res, a=ax: self.after(0, self._on_sweep_point, a, res))
+                # Sauvegarde auto par axe (sur le thread principal : lit les vars tk)
+                self.after(0, self._autosave_sweep, ax)
             return None
 
         def _on_done(_):
@@ -1761,8 +1784,12 @@ class Application(tk.Tk):
             if self._cross_results:
                 worst = max(e["cross_axis_pct"] for e in self._cross_results.values())
                 ok = worst <= CAL_CROSS_AXIS_MAX_PCT
-                self._set_status(f"Transversale : max {worst:.2f}% — "
-                                 + ("OK" if ok else "HORS TOL"))
+                saved = self._autosave_cross()
+                msg = (f"Transversale : max {worst:.2f}% — "
+                       + ("OK" if ok else "HORS TOL"))
+                if saved:
+                    msg += f" · {os.path.basename(saved)}"
+                self._set_status(msg)
             else:
                 self._set_status("Transversale : aucun point exploitable")
 
@@ -2009,6 +2036,193 @@ class Application(tk.Tk):
                 [self._cross_results[f]["cross_axis_pct"] for f in cf],
                 dtype=np.float64)
         np.savez(path, **save_dict)
+
+    # ===================================================================
+    # Sauvegarde automatique (un fichier horodate par execution, par cas)
+    # ===================================================================
+
+    def _meta_header(self, axis=None) -> list:
+        """Lignes de commentaire (metadonnees) communes a tous les CSV auto."""
+        lines = [
+            f"date: {datetime.now():%Y-%m-%d %H:%M:%S}",
+            f"geophone: {self._vars['cal_geophone'].get()}",
+        ]
+        if axis:
+            lines.append(f"axis: {axis}")
+        lines += [
+            f"aps125_gain_vertical: {self._aps125_gain_for('vertical')}",
+            f"aps125_gain_horizontal: {self._aps125_gain_for('horizontal')}",
+            f"aps125_current_limit_vertical: {self._aps125_climit_for('vertical')}",
+            f"aps125_current_limit_horizontal: {self._aps125_climit_for('horizontal')}",
+            f"noise_floor_vertical_g_rms: {self._noise_floor_g['vertical']}",
+            f"noise_floor_horizontal_g_rms: {self._noise_floor_g['horizontal']}",
+        ]
+        return lines
+
+    def _meta_npz(self) -> dict:
+        """Metadonnees scalaires communes a tous les NPZ auto."""
+        nf = self._noise_floor_g
+        return {
+            "geophone_model": np.array(self._vars["cal_geophone"].get()),
+            "date": np.array(f"{datetime.now():%Y-%m-%d %H:%M:%S}"),
+            "aps125_gain_vertical": np.array(self._aps125_gain_for("vertical")),
+            "aps125_gain_horizontal": np.array(self._aps125_gain_for("horizontal")),
+            "aps125_current_limit_vertical":
+                np.array(self._aps125_climit_for("vertical")),
+            "aps125_current_limit_horizontal":
+                np.array(self._aps125_climit_for("horizontal")),
+            "noise_floor_vertical_g_rms":
+                np.array(nf["vertical"] if nf["vertical"] is not None else np.nan),
+            "noise_floor_horizontal_g_rms":
+                np.array(nf["horizontal"] if nf["horizontal"] is not None else np.nan),
+        }
+
+    def _announce_saved(self, case: str, csv_path: str) -> str:
+        """Trace la sauvegarde dans le journal ; retourne le chemin CSV.
+
+        N'ecrase pas la barre de statut : l'appelant ajoute le nom de fichier
+        a son propre message de verdict (pass/fail)."""
+        self._glog.info(f"Sauvegarde auto {case}: {csv_path}")
+        return csv_path
+
+    def _autosave_acquisition(self):
+        """Acquisition unitaire : forme d'onde geophone (CSV) + tout (NPZ)."""
+        if self._last_adc is None:
+            return
+        geophone = self._vars["cal_geophone"].get()
+        rate = self._last_rate
+        ts = datastore.timestamp()
+        csv_path = datastore.build_path("acquisition", "csv",
+                                        geophone=geophone, ts=ts)
+        rows = ((i, i / rate, v) for i, v in enumerate(self._last_adc))
+        datastore.write_csv(csv_path, ["index", "time_s", "geophone_count"],
+                            rows, header_comments=self._meta_header())
+        save = self._meta_npz()
+        save["geophone_wave"] = np.array(self._last_adc, dtype=np.int64)
+        save["geophone_rate"] = np.array(rate)
+        if self._last_accel is not None:
+            save["accel_wave"] = np.asarray(self._last_accel)
+            save["accel_rate"] = np.array(NI_SAMPLE_RATE)
+        np.savez(datastore.build_path("acquisition", "npz",
+                                      geophone=geophone, ts=ts), **save)
+        return self._announce_saved("acquisition", csv_path)
+
+    def _autosave_sweep(self, axis: str):
+        """Balayage de calibration : table sensibilite (CSV) + formes d'onde (NPZ)."""
+        results = self._sweep_results.get(axis, {})
+        if not results:
+            return
+        geophone = self._vars["cal_geophone"].get()
+        ts = datastore.timestamp()
+        freqs = sorted(results.keys())
+        cols = (["axis", "aps125_gain", "aps125_current_limit"]
+                + self._SWEEP_COLUMNS)
+        rows = [[results[fr].get(c, "") for c in cols] for fr in freqs]
+        csv_path = datastore.build_path("balayage", "csv", geophone=geophone,
+                                        axis=axis, ts=ts)
+        datastore.write_csv(csv_path, cols, rows,
+                            header_comments=self._meta_header(axis))
+        save = self._meta_npz()
+        save["axis"] = np.array(axis)
+        save["freq_hz"] = np.array(freqs, dtype=np.float64)
+        for col in self._SWEEP_COLUMNS:
+            if col == "note":
+                continue
+            save[f"summary_{col}"] = np.array(
+                [results[fr].get(col, 0) for fr in freqs],
+                dtype=np.bool_ if col == "skipped" else np.float64)
+        for fr in freqs:
+            d = results[fr]
+            if "geo_wave" in d:
+                save[f"geo_wave_{fr:g}Hz"] = np.asarray(d["geo_wave"])
+                save[f"geo_rate_{fr:g}Hz"] = np.array(d.get("geo_rate", 0))
+            if "accel_wave" in d:
+                save[f"accel_wave_{fr:g}Hz"] = np.asarray(d["accel_wave"])
+                save[f"accel_fs_{fr:g}Hz"] = np.array(d.get("accel_fs", 0))
+        np.savez(datastore.build_path("balayage", "npz", geophone=geophone,
+                                      axis=axis, ts=ts), **save)
+        return self._announce_saved("balayage", csv_path)
+
+    def _autosave_bench(self, axis: str):
+        """Transfert banc H_banc(f) : table (CSV, accel seul, sans geophone)."""
+        results = self._bench_results.get(axis, {})
+        if not results:
+            return
+        ts = datastore.timestamp()
+        freqs = sorted(results.keys())
+        cols = ["axis", "freq_hz", "target_g", "vpp", "measured_g",
+                "h_bench_g_per_v", "snr_db", "thd_percent", "stiffness",
+                "displacement_mm", "safety_margin_mm", "skipped", "note"]
+        rows = [[results[fr].get(c, "") for c in cols] for fr in freqs]
+        csv_path = datastore.build_path("transfert_banc", "csv", axis=axis, ts=ts)
+        datastore.write_csv(csv_path, cols, rows,
+                            header_comments=self._meta_header(axis))
+        return self._announce_saved("transfert_banc", csv_path)
+
+    def _autosave_linearity(self, axis: str):
+        """Linearite : table aplatie par (freq, niveau) (CSV) + formes d'onde (NPZ)."""
+        entries = self._linearity_results.get(axis, [])
+        if not entries:
+            return
+        geophone = self._vars["cal_geophone"].get()
+        ts = datastore.timestamp()
+        cols = ["axis", "freq_hz", "level", "target_g", "measured_g",
+                "sensitivity_counts_per_g", "linearity_error_db", "pass",
+                "skipped", "note"]
+        rows = []
+        for e in entries:
+            for p in e["levels"]:
+                rows.append([axis, e["freq_hz"], p.get("level", ""),
+                             p.get("target_g", ""), p.get("measured_g", ""),
+                             p.get("sensitivity_counts_per_g", ""),
+                             e["linearity_error_db"], e["pass"],
+                             p.get("skipped", ""), p.get("note", "")])
+        csv_path = datastore.build_path("linearite", "csv", geophone=geophone,
+                                        axis=axis, ts=ts)
+        datastore.write_csv(csv_path, cols, rows,
+                            header_comments=self._meta_header(axis))
+        save = self._meta_npz()
+        save["axis"] = np.array(axis)
+        for e in entries:
+            for p in e["levels"]:
+                tag = f"{e['freq_hz']:g}Hz_lvl{p.get('level', 0):g}"
+                if "geo_wave" in p:
+                    save[f"geo_wave_{tag}"] = np.asarray(p["geo_wave"])
+                if "accel_wave" in p:
+                    save[f"accel_wave_{tag}"] = np.asarray(p["accel_wave"])
+        np.savez(datastore.build_path("linearite", "npz", geophone=geophone,
+                                      axis=axis, ts=ts), **save)
+        return self._announce_saved("linearite", csv_path)
+
+    def _autosave_daily(self, axis: str):
+        """Verification quotidienne : table ecart vs reference (CSV)."""
+        if not self._daily_results:
+            return
+        ts = datastore.timestamp()
+        cols = ["axis", "freq_hz", "h_bench_g_per_v", "h_bench_ref",
+                "deviation_db", "pass", "skipped", "note"]
+        rows = [[axis] + [r.get(c, "") for c in cols[1:]]
+                for r in self._daily_results]
+        csv_path = datastore.build_path("verif_quotidienne", "csv",
+                                        axis=axis, ts=ts)
+        datastore.write_csv(csv_path, cols, rows,
+                            header_comments=self._meta_header(axis))
+        return self._announce_saved("verif_quotidienne", csv_path)
+
+    def _autosave_cross(self):
+        """Sensibilite transversale : table % par frequence (CSV)."""
+        if not self._cross_results:
+            return
+        geophone = self._vars["cal_geophone"].get()
+        ts = datastore.timestamp()
+        freqs = sorted(self._cross_results.keys())
+        cols = ["freq_hz", "s_main", "s_trans", "cross_axis_pct", "pass"]
+        rows = [[self._cross_results[f].get(c, "") for c in cols] for f in freqs]
+        csv_path = datastore.build_path("transversale", "csv",
+                                        geophone=geophone, ts=ts)
+        datastore.write_csv(csv_path, cols, rows,
+                            header_comments=self._meta_header())
+        return self._announce_saved("transversale", csv_path)
 
     # ===================================================================
     # Fermeture

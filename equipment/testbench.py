@@ -336,13 +336,21 @@ class TestBench:
             "measured_g": accel_g,
             "snr_db": snr_db(sig, freq_hz, fs),
             "thd_percent": thd_percent(sig, freq_hz, fs),
+            # Formes d'onde brutes (donnees temporelles) pour sauvegarde/archivage
+            "accel_wave": sig,
+            "accel_fs": fs,
         }
         if geo is not None:
             amp = coherent_amplitude_peak(geo, freq_hz, geophone_rate)
             out["geophone_counts_peak"] = amp
             out["sensitivity_counts_per_g"] = (amp / accel_g
                                                if accel_g > 1e-12 else 0.0)
+            out["geo_wave"] = geo
+            out["geo_rate"] = geophone_rate
         return out
+
+    # Cles de formes d'onde brutes produites par _measure_point_sync
+    _WAVE_KEYS = ("accel_wave", "accel_fs", "geo_wave", "geo_rate")
 
     # ──────────────────────────────────────────────────────────────────
     # Étape 1 : plancher de bruit + fonction de transfert du banc H_banc(f)
@@ -435,6 +443,9 @@ class TestBench:
                         m = self._measure_point_sync(freq, geophone_count, geophone_rate)
                         pt["measured_g"] = m["measured_g"]
                         pt["sensitivity_counts_per_g"] = m.get("sensitivity_counts_per_g", 0.0)
+                        for k in self._WAVE_KEYS:
+                            if k in m:
+                                pt[k] = m[k]
                     per_level.append(pt)
                 err = linearity_error_db([p["sensitivity_counts_per_g"]
                                           for p in per_level])
@@ -526,6 +537,9 @@ class TestBench:
                     if "geophone_counts_peak" in m:
                         res["geophone_counts_peak"] = m["geophone_counts_peak"]
                         res["sensitivity_counts_per_g"] = m["sensitivity_counts_per_g"]
+                    for k in self._WAVE_KEYS:
+                        if k in m:
+                            res[k] = m[k]
                     if m["snr_db"] < SNR_MIN_DB:
                         res["note"] = f"SNR {m['snr_db']:.1f} dB < {SNR_MIN_DB} dB"
 
