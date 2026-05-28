@@ -2123,7 +2123,7 @@ class Application(tk.Tk):
     # Colonnes du sweep de calibration (schéma TestBench.calibration_sweep)
     _SWEEP_COLUMNS = [
         "freq_hz", "target_g", "measured_g", "vpp", "stiffness",
-        "displacement_mm", "safety_margin_mm",
+        "displacement_mm", "peak_velocity_mps", "safety_margin_mm",
         "snr_db", "thd_percent",
         "geophone_counts_peak", "sensitivity_counts_per_g",
         "skipped", "note",

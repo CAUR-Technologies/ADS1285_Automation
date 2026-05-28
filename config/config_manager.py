@@ -71,8 +71,14 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "envelope_fraction":         "0.6",
         # Plafond absolu d'acceleration en haute frequence (g)
         "accel_cap_g":               "1.0",
-        # Acceleration plancher (g) — en dessous, signal trop faible / inutile
-        "accel_floor_g":             "0.0015",
+        # Acceleration plancher (g) — en dessous, point ignore (cible trop faible).
+        # Bas pour autoriser les tres basses frequences (ex. 0,1 Hz ~0,6 mg).
+        "accel_floor_g":             "0.0005",
+        # Vitesse crete max (m/s) toleree par le geophone (capteur de vitesse).
+        # Borne la sortie du geophone -> pas de saturation ; transforme le
+        # balayage en balayage a vitesse constante dans la bande utile.
+        # Regler selon le geophone : v_max ≈ 0,8 . V_pleine_echelle_ADS / sensibilite[V/(m/s)].
+        "geophone_max_velocity_mps": "0.01",
         # Sensibilite chaine accelerometre NI : Silicon Designs 2240-005 = 800 mV/g.
         # Si la boite Spektra applique un gain, ajuster cette valeur.
         "accel_sensitivity_v_per_g": "0.8",

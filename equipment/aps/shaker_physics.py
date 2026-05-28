@@ -65,29 +65,64 @@ def max_accel_g(freq_hz: float, stroke_mm: float) -> float:
     return a_ms2 / G
 
 
+def peak_velocity_mps(accel_g: float, freq_hz: float) -> float:
+    """
+    Vitesse crete (m/s) pour une acceleration crete donnee a une frequence.
+
+        v = a / (2.pi.f)     (mouvement sinusoidal)
+
+    Le geophone etant un capteur de VITESSE, sa sortie est proportionnelle a
+    cette grandeur : c'est elle qu'il faut borner pour eviter la saturation.
+    """
+    if freq_hz <= 0:
+        raise ValueError("freq_hz doit etre > 0")
+    return (accel_g * G) / omega(freq_hz)
+
+
+def max_accel_from_velocity_g(freq_hz: float, v_max_mps: float) -> float:
+    """
+    Acceleration crete (g) correspondant a une vitesse crete maximale.
+
+        a = v . (2.pi.f)   ->   en g : v_max . (2.pi.f) / G
+
+    Sert a plafonner la sortie du geophone (proportionnelle a la vitesse) :
+    c'est la limite "vitesse" de l'enveloppe d'operation du shaker.
+    """
+    if freq_hz <= 0:
+        raise ValueError("freq_hz doit etre > 0")
+    return v_max_mps * omega(freq_hz) / G
+
+
 def target_accel_g(freq_hz: float,
                    stroke_mm: float,
                    fraction: float = 0.6,
                    accel_cap_g: float = 1.0,
-                   accel_floor_g: float | None = None) -> float:
+                   accel_floor_g: float | None = None,
+                   v_max_mps: float | None = None) -> float:
     """
-    Acceleration cible (g) pour un point de sweep : fraction constante de
-    l'enveloppe stroke, plafonnee a accel_cap_g.
+    Acceleration cible (g) pour un point de sweep : intersection des limites
+    d'operation (deplacement / vitesse / acceleration) du shaker.
 
-        target = min(fraction . a_max(f), accel_cap_g)
+        target = min( fraction . a_max(f),          # course mecanique (bas f)
+                      v_max . (2.pi.f) / G,          # vitesse geophone (mid f)
+                      accel_cap_g )                  # plafond accel (haut f)
 
-    Mathematiquement, viser une fraction constante de l'enveloppe revient a
-    un deplacement constant = fraction . S_max (tant qu'on n'est pas plafonne).
+    Sans limite de vitesse (v_max_mps=None) on retombe sur l'ancienne enveloppe
+    a deplacement constant. Avec, le balayage devient un balayage a VITESSE
+    constante dans la bande utile : la sortie du geophone (∝ vitesse) reste
+    bornee -> pas de saturation, amplitude de sortie uniforme.
 
     Parameters
     ----------
-    fraction      : fraction de l'enveloppe (0..1), marge de securite overtravel
+    fraction      : fraction de l'enveloppe stroke (0..1), marge overtravel
     accel_cap_g   : plafond absolu (g) impose en haute frequence
-    accel_floor_g : si fourni, plancher en dessous duquel on signale que le
-                    point est trop faible (ne modifie pas la valeur retournee)
+    accel_floor_g : indicatif (ne modifie pas la valeur retournee)
+    v_max_mps     : vitesse crete max (m/s) tolerée par le geophone (None = off)
     """
     env = max_accel_g(freq_hz, stroke_mm)
     target = min(fraction * env, accel_cap_g)
+    if v_max_mps is not None and v_max_mps > 0:
+        target = min(target, max_accel_from_velocity_g(freq_hz, v_max_mps))
     return target
 
 

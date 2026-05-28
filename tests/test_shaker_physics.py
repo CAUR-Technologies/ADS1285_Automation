@@ -84,6 +84,31 @@ def test_is_safe_overtravel():
     assert sp.safety_margin_mm(0.1, 0.01, STROKE) < 0
 
 
+def test_peak_velocity_mps():
+    # v = a / (2.pi.f) ; pour a=1g a 1 Hz -> 9,80665/(2pi) ≈ 1,561 m/s
+    assert approx(sp.peak_velocity_mps(1.0, 1.0), 9.80665 / (2 * math.pi), rel=1e-9)
+
+
+def test_max_accel_from_velocity_inverse():
+    # max_accel_from_velocity_g et peak_velocity_mps sont inverses l'un de l'autre
+    a = sp.max_accel_from_velocity_g(2.0, 0.01)
+    assert approx(sp.peak_velocity_mps(a, 2.0), 0.01, rel=1e-9)
+
+
+def test_target_limite_vitesse():
+    vmax = 0.01
+    # Avec limite de vitesse, la cible est plus restrictive (ou egale)
+    sans = sp.target_accel_g(1.0, STROKE, fraction=0.6, accel_cap_g=1.0)
+    avec = sp.target_accel_g(1.0, STROKE, fraction=0.6, accel_cap_g=1.0,
+                             v_max_mps=vmax)
+    assert avec <= sans + 1e-12
+    # Dans la region limitee par la vitesse, la vitesse crete = vmax (constante)
+    for f in (0.5, 1.0, 5.0, 20.0):
+        t = sp.target_accel_g(f, STROKE, fraction=0.6, accel_cap_g=1.0,
+                              v_max_mps=vmax)
+        assert sp.peak_velocity_mps(t, f) <= vmax + 1e-9
+
+
 def test_stiffness_bandes():
     assert sp.stiffness_for_freq(0.5) == 3
     assert sp.stiffness_for_freq(1.0) == 10

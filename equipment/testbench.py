@@ -35,6 +35,7 @@ from config.settings import (
     SHAKER_SERVO_MAX_ITER,
     SHAKER_SERVO_START_VPP,
     SHAKER_SERVO_VPP_MAX,
+    SHAKER_GEOPHONE_MAX_VELOCITY_MPS,
 )
 from constants import SNR_MIN_DB
 
@@ -64,6 +65,7 @@ class TestBench:
                  servo_max_iter: int = SHAKER_SERVO_MAX_ITER,
                  servo_start_vpp: float = SHAKER_SERVO_START_VPP,
                  vpp_max: float = SHAKER_SERVO_VPP_MAX,
+                 geophone_max_velocity_mps: float = SHAKER_GEOPHONE_MAX_VELOCITY_MPS,
                  ref_channel: int = 0):
         self._wav = wavetek
         self._aps = aps
@@ -79,6 +81,7 @@ class TestBench:
         self._servo_max_iter = servo_max_iter
         self._servo_start_vpp = servo_start_vpp
         self._vpp_max = vpp_max
+        self._v_max = geophone_max_velocity_mps   # vitesse crête max géophone (m/s)
 
         self._zer_value = 0          # dernière valeur ZER appliquée (-99..99)
         self._settle_s = 4.0         # temps de stabilisation par défaut (s)
@@ -118,10 +121,14 @@ class TestBench:
         return (zer_value / 99.0) * 0.10 * self._stroke
 
     def target_accel_g(self, freq_hz: float) -> float:
-        """Accélération cible (g) pour une fréquence donnée (enveloppe plafonnée)."""
+        """Accélération cible (g) pour une fréquence donnée.
+
+        Intersection des limites déplacement / vitesse / accélération :
+        la limite de vitesse borne la sortie du géophone (anti-saturation)."""
         return sp.target_accel_g(freq_hz, self._stroke,
                                  fraction=self._fraction,
-                                 accel_cap_g=self._cap)
+                                 accel_cap_g=self._cap,
+                                 v_max_mps=self._v_max)
 
     # ──────────────────────────────────────────────────────────────────
     # Sécurité
@@ -267,6 +274,7 @@ class TestBench:
             "target_g": target_g,
             "stiffness": sp.stiffness_for_freq(freq_hz),
             "displacement_mm": A,
+            "peak_velocity_mps": sp.peak_velocity_mps(target_g, freq_hz),
             "safety_margin_mm": margin,
             "measured_g": 0.0,
             "vpp": 0.0,
