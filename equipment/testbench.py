@@ -22,7 +22,8 @@ import time
 import threading
 
 from equipment.aps import shaker_physics as sp
-from equipment.dsp import coherent_amplitude_peak, ratio_db, linearity_error_db
+from equipment.dsp import (coherent_amplitude_peak, ratio_db,
+                           linearity_error_db, snr_db, thd_percent)
 from equipment.instrlog import get_logger
 from constants import CAL_LINEARITY_MAX_DB, CAL_DAILY_TOL_DB, CAL_DAILY_FREQS_HZ
 from config.settings import (
@@ -290,6 +291,50 @@ class TestBench:
         result["measured_g"] = measured
         return result
 
+    def _measure_point_sync(self, freq_hz: float,
+                            geophone_count: int, geophone_rate: int) -> dict:
+        """
+        Acquiert SIMULTANÉMENT le géophone (ADS1285) et l'accéléromètre de
+        référence sur la MÊME fenêtre (durée = count/rate), puis extrait les
+        amplitudes par détection cohérente à freq_hz. Garantit que les deux
+        capteurs voient la même excitation (plus de décalage séquentiel).
+
+        Returns : measured_g, snr_db, thd_percent, et si géophone présent
+        geophone_counts_peak + sensitivity_counts_per_g.
+        """
+        duration = geophone_count / float(geophone_rate)
+        holder = {}
+
+        def _acq_accel():
+            try:
+                arr = self._accel.acquire_seconds(duration)
+                ref = arr[self._ref_channel] if getattr(arr, "ndim", 1) == 2 else arr
+                holder["sig"] = ref
+                holder["fs"] = self._accel.sample_rate
+            except Exception as e:   # noqa: BLE001
+                holder["err"] = e
+
+        th = threading.Thread(target=_acq_accel, daemon=True)
+        th.start()
+        geo = self._ads.acquire(geophone_count, geophone_rate) if self._ads else None
+        th.join()
+        if "err" in holder:
+            raise holder["err"]
+
+        sig, fs = holder["sig"], holder["fs"]
+        accel_g = coherent_amplitude_peak(sig, freq_hz, fs) / self._accel.sensitivity_v_per_g
+        out = {
+            "measured_g": accel_g,
+            "snr_db": snr_db(sig, freq_hz, fs),
+            "thd_percent": thd_percent(sig, freq_hz, fs),
+        }
+        if geo is not None:
+            amp = coherent_amplitude_peak(geo, freq_hz, geophone_rate)
+            out["geophone_counts_peak"] = amp
+            out["sensitivity_counts_per_g"] = (amp / accel_g
+                                               if accel_g > 1e-12 else 0.0)
+        return out
+
     # ──────────────────────────────────────────────────────────────────
     # Étape 1 : plancher de bruit + fonction de transfert du banc H_banc(f)
     # ──────────────────────────────────────────────────────────────────
@@ -378,11 +423,9 @@ class TestBench:
                           "measured_g": res.get("measured_g", 0.0),
                           "sensitivity_counts_per_g": 0.0}
                     if not res["skipped"]:
-                        # Accéléro + géophone en parallèle (même fenêtre)
-                        m, amp = self._measure_synced(freq, geophone_count, geophone_rate)
-                        pt["measured_g"] = m["accel_g"]
-                        if amp is not None and m["accel_g"] > 1e-9:
-                            pt["sensitivity_counts_per_g"] = amp / m["accel_g"]
+                        m = self._measure_point_sync(freq, geophone_count, geophone_rate)
+                        pt["measured_g"] = m["measured_g"]
+                        pt["sensitivity_counts_per_g"] = m.get("sensitivity_counts_per_g", 0.0)
                     per_level.append(pt)
                 err = linearity_error_db([p["sensitivity_counts_per_g"]
                                           for p in per_level])
@@ -436,41 +479,6 @@ class TestBench:
         return results
 
     # ──────────────────────────────────────────────────────────────────
-    # Mesure synchronisée accéléromètre + géophone (même fenêtre)
-    # ──────────────────────────────────────────────────────────────────
-
-    def _measure_synced(self, freq_hz: float,
-                        geophone_count: int, geophone_rate: int):
-        """
-        Acquiert l'accéléromètre de référence (g + SNR + THD) ET le géophone
-        EN PARALLÈLE, pour qu'ils couvrent la même tranche d'excitation.
-
-        Retourne (m_accel: dict, geophone_amp: float | None).
-        """
-        holder = {"m": None, "exc": None}
-
-        def _acq_accel():
-            try:
-                holder["m"] = self._accel.measure(
-                    freq_hz, ref_channel=self._ref_channel)
-            except Exception as e:               # capturée -> re-levée après join
-                holder["exc"] = e
-
-        th = threading.Thread(target=_acq_accel)
-        th.start()
-        samples = None
-        try:
-            if self._ads is not None:
-                samples = self._ads.acquire(geophone_count, geophone_rate)
-        finally:
-            th.join()
-        if holder["exc"] is not None:
-            raise holder["exc"]
-        amp = (coherent_amplitude_peak(samples, freq_hz, geophone_rate)
-               if samples is not None else None)
-        return holder["m"], amp
-
-    # ──────────────────────────────────────────────────────────────────
     # Étape 2 : sweep de calibration géophone
     # ──────────────────────────────────────────────────────────────────
 
@@ -501,18 +509,16 @@ class TestBench:
                 res = self.set_frequency_safe(freq)
 
                 if not res["skipped"]:
-                    # Accéléro + géophone EN PARALLÈLE (même fenêtre d'excitation)
-                    m, amp = self._measure_synced(freq, geophone_count, geophone_rate)
-                    res["measured_g"] = m["accel_g"]
+                    # Acquisition SIMULTANÉE géophone + accéléromètre (même fenêtre)
+                    m = self._measure_point_sync(freq, geophone_count, geophone_rate)
+                    res["measured_g"] = m["measured_g"]
                     res["snr_db"] = m["snr_db"]
                     res["thd_percent"] = m["thd_percent"]
+                    if "geophone_counts_peak" in m:
+                        res["geophone_counts_peak"] = m["geophone_counts_peak"]
+                        res["sensitivity_counts_per_g"] = m["sensitivity_counts_per_g"]
                     if m["snr_db"] < SNR_MIN_DB:
                         res["note"] = f"SNR {m['snr_db']:.1f} dB < {SNR_MIN_DB} dB"
-
-                    if amp is not None:
-                        res["geophone_counts_peak"] = amp
-                        res["sensitivity_counts_per_g"] = (
-                            amp / res["measured_g"] if res["measured_g"] > 1e-9 else 0.0)
 
                 results.append(res)
                 if on_point is not None:

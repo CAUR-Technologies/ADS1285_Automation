@@ -195,6 +195,21 @@ class Accelerometer:
         ref = data[idx] if data.ndim == 2 else data
         return rms(ref) / self._sensitivity
 
+    def acquire_seconds(self, duration_s: float,
+                        sample_rate: int | None = None) -> np.ndarray:
+        """
+        Acquisition finie sur une durée donnée (tous les canaux).
+
+        Utilisé pour acquérir l'accéléromètre EN MÊME TEMPS que le géophone,
+        sur la même fenêtre temporelle (durée = count/rate du géophone).
+        Échantillonné à sample_rate (défaut : taux NI configuré).
+
+        Returns un tableau (num_channels, samples).
+        """
+        fs = sample_rate or self._sample_rate
+        samples = max(int(fs * duration_s), 64)
+        return self._acquire_window(fs, samples)
+
     @property
     def sensitivity_v_per_g(self) -> float:
         return self._sensitivity
