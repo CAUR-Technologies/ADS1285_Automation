@@ -794,8 +794,9 @@ class Application(tk.Tk):
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y",
                                                     padx=8, pady=2)
         ttk.Label(bar, text="Frequences :").pack(side="left", padx=(0, 3))
-        self._make_var("sweep_freqs", "1, 2, 5, 10, 20, 50, 100")
-        e = ttk.Entry(bar, textvariable=self._vars["sweep_freqs"], width=30)
+        self._make_var("sweep_freqs",
+                       "0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50")
+        e = ttk.Entry(bar, textvariable=self._vars["sweep_freqs"], width=36)
         e.pack(side="left", padx=(0, 5))
         ttk.Label(bar, text="Stab. (s) :").pack(side="left")
         self._make_var("sweep_stab", "2.0")
