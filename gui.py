@@ -339,6 +339,10 @@ class Application(tk.Tk):
         # --- Barre de statut ---
         self._build_status_bar()
 
+        # Synchronise les champs dépendant de l'axe (port, gain/limite APS 125)
+        # sur l'axe par défaut sélectionné.
+        self._on_aps_axis_change()
+
     # ---------------------------------------------------------------
     # Panneau gauche — sections appareils
     # ---------------------------------------------------------------
