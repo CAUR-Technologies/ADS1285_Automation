@@ -104,6 +104,12 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "servo_vpp_max":             "10.0",
         # Modele de geophone candidat en cours de test (metadonnee calibration)
         "geophone":                  "HG-5VHS",
+        # Bareme de rigidite (STF) par axe, adapte a la frequence. Format :
+        # "<seuil_Hz>:<STF>, ..., *:<STF>"  (STF applique si f < seuil ; '*' = au-dela).
+        # Reglable par axe car le vertical (gravite) peut differer de l'horizontal.
+        # A STF eleve le controleur annule la vibration ; trop bas -> derive.
+        "stiffness_vertical":        "10:3, 50:5, *:8",
+        "stiffness_horizontal":      "10:3, 50:5, *:8",
     },
     "General": {
         "data_output_dir": "data",

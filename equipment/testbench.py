@@ -73,6 +73,7 @@ class TestBench:
                  servo_start_vpp: float = SHAKER_SERVO_START_VPP,
                  vpp_max: float = SHAKER_SERVO_VPP_MAX,
                  geophone_max_velocity_mps: float = SHAKER_GEOPHONE_MAX_VELOCITY_MPS,
+                 stiffness_schedule=None,
                  ref_channel: int = 0):
         self._wav = wavetek
         self._aps = aps
@@ -90,6 +91,7 @@ class TestBench:
         self._servo_max_step = 3.0   # montée Vpp max par itération (anti-claquage)
         self._vpp_max = vpp_max
         self._v_max = geophone_max_velocity_mps   # vitesse crête max géophone (m/s)
+        self._stiffness_schedule = stiffness_schedule  # barème STF par axe (config)
 
         self._zer_value = 0          # dernière valeur ZER appliquée (-99..99)
         self._settle_s = 4.0         # temps de stabilisation par défaut (s)
@@ -221,7 +223,7 @@ class TestBench:
         (Le démarrage centre aussi l'armature sur la consigne ZER ; sans STA l'AC
         est coupée et le shaker ne bouge pas.)
         """
-        stf = sp.stiffness_for_freq(freq_hz)
+        stf = sp.stiffness_for_freq(freq_hz, self._stiffness_schedule)
 
         if self._aps_started and stf == self._current_stf:
             return stf   # déjà démarré à la bonne rigidité — rien à faire

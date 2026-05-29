@@ -37,7 +37,7 @@ from config.settings import (
     NI_REF_CHANNEL_VERTICAL, NI_REF_CHANNEL_HORIZONTAL,
     SHAKER_ENVELOPE_FRACTION, SHAKER_ACCEL_CAP_G, SHAKER_GEOPHONE,
     SHAKER_GEOPHONE_MAX_VELOCITY_MPS, SHAKER_GEOPHONE_VELOCITY_SAFETY,
-    SHAKER_BENCH_IGNORE_VELOCITY,
+    SHAKER_BENCH_IGNORE_VELOCITY, SHAKER_STIFFNESS_SCHEDULE,
     ADS1285_FULL_SCALE_VPEAK,
     DATA_OUTPUT_DIR,
 )
@@ -232,7 +232,8 @@ class DeviceManager:
         # Canal de l'accéléromètre de référence selon l'axe (un par axe)
         ref_channel = (NI_REF_CHANNEL_VERTICAL if axis == "vertical"
                        else NI_REF_CHANNEL_HORIZONTAL)
-        kw = {"ref_channel": ref_channel}
+        kw = {"ref_channel": ref_channel,
+              "stiffness_schedule": SHAKER_STIFFNESS_SCHEDULE.get(axis)}
         if fraction is not None:
             kw["envelope_fraction"] = fraction
         if accel_cap_g is not None:

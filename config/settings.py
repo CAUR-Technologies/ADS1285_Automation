@@ -3,6 +3,8 @@ Configuration centralisee — valeurs lues depuis config.ini.
 Modifier config.ini (ou l'interface graphique) pour changer les parametres.
 """
 
+import math
+
 from config.config_manager import get
 
 # --- ADS1285 EVM ---
@@ -55,6 +57,30 @@ SHAKER_SERVO_MAX_ITER     = int(get("Shaker", "servo_max_iter"))
 SHAKER_SERVO_START_VPP    = float(get("Shaker", "servo_start_vpp"))
 SHAKER_SERVO_VPP_MAX      = float(get("Shaker", "servo_vpp_max"))
 SHAKER_GEOPHONE           = get("Shaker", "geophone")
+
+
+def _parse_stiffness_schedule(spec: str):
+    """'10:3, 50:5, *:8' -> [(10.0, 3), (50.0, 5), (inf, 8)] (trié par seuil).
+
+    Retourne None si le format est invalide (le code retombe alors sur le
+    barème par défaut de shaker_physics)."""
+    try:
+        bands = []
+        for part in spec.split(","):
+            thr_s, val_s = part.split(":")
+            thr_s = thr_s.strip()
+            thr = math.inf if thr_s == "*" else float(thr_s)
+            bands.append((thr, int(val_s.strip())))
+        bands.sort(key=lambda b: b[0])
+        return bands or None
+    except Exception:
+        return None
+
+
+SHAKER_STIFFNESS_SCHEDULE = {
+    "vertical":   _parse_stiffness_schedule(get("Shaker", "stiffness_vertical")),
+    "horizontal": _parse_stiffness_schedule(get("Shaker", "stiffness_horizontal")),
+}
 
 # --- Acquisition generale ---
 DATA_OUTPUT_DIR = get("General", "data_output_dir")

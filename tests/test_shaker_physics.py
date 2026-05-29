@@ -120,6 +120,18 @@ def test_stiffness_bandes():
     assert sp.stiffness_for_freq(100.0) == 8
 
 
+def test_stiffness_schedule_configurable():
+    # Bareme custom (ex. axe vertical) : f<5 -> 2, 5<=f<30 -> 4, sinon 6
+    sched = [(5.0, 2), (30.0, 4), (float("inf"), 6)]
+    assert sp.stiffness_for_freq(1.0, sched) == 2
+    assert sp.stiffness_for_freq(5.0, sched) == 4
+    assert sp.stiffness_for_freq(29.9, sched) == 4
+    assert sp.stiffness_for_freq(30.0, sched) == 6
+    assert sp.stiffness_for_freq(100.0, sched) == 6
+    # schedule None -> bareme par defaut
+    assert sp.stiffness_for_freq(1.0, None) == 3
+
+
 def test_conversion_volts_g():
     # Silicon Designs 2240-005 : 800 mV/g
     assert approx(sp.accel_to_volts(1.0, 0.8), 0.8)

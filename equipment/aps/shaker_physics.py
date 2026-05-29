@@ -152,9 +152,14 @@ def safety_margin_mm(freq_hz: float,
     return stroke_mm - (abs(zer_offset_mm) + A)
 
 
-def stiffness_for_freq(freq_hz: float) -> int:
+def stiffness_for_freq(freq_hz: float, schedule=None) -> int:
     """
     Stiffness (STF, 0..31) recommandee selon la frequence de test.
+
+    schedule : bareme optionnel [(seuil, STF), ...] trie par seuil croissant
+    (le dernier seuil = inf) ; STF retourne pour le premier seuil > freq_hz.
+    Permet un bareme configurable PAR AXE (config.ini). Si None, bareme par
+    defaut ci-dessous.
 
     Regle du manuel APS 0109 : la bande passante du controleur de position
     doit rester >= 1 decade sous la frequence de test pour ne pas "corriger"
@@ -172,6 +177,11 @@ def stiffness_for_freq(freq_hz: float) -> int:
     A ajuster selon le comportement (trop raide -> annule ; trop souple ->
     derive de position).
     """
+    if schedule:
+        for threshold, stf in schedule:
+            if freq_hz < threshold:
+                return stf
+        return schedule[-1][1]
     if freq_hz < 10.0:
         return 3
     elif freq_hz < 50.0:
