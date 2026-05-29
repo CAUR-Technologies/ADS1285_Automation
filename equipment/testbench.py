@@ -233,35 +233,31 @@ class TestBench:
             self._aps.stop()
             self._aps_started = False
 
-        self._aps.set_stiffness(stf)      # STF AVANT STA
-        self._aps.start()                 # STA : applique la rigidité réglée
+        self._aps.set_stiffness(stf)      # STF (cible) AVANT STA
+        self._aps.start()                 # STA : démarre à SSS puis rampe vers STF
         self._aps_started = True
         self._current_stf = stf
 
-        # Vérification : relire la rigidité réellement appliquée (STF?).
-        # On NE masque PAS un échec : si la relecture ne correspond pas (ou
-        # échoue), on le signale — c'est le diagnostic « la commande est-elle
-        # vraiment prise par l'appareil ».
-        try:
-            applied = self._aps.get_stiffness()
-            if applied == stf:
-                self._log(f"[banc] STF={stf} confirmé par relecture (STF?={applied})")
-            else:
-                self._log(f"[banc] ⚠ STF demandé={stf} mais relu STF?={applied} "
-                          f"— l'appareil n'applique PAS la rigidité")
-        except Exception as e:    # noqa: BLE001
-            applied = "?"
-            self._log(f"[banc] ⚠ STF? illisible ({e}) — application non confirmée")
-
-        # Temps de stabilisation : WTR réel = val×10 + 3500 ms
+        # Temps de stabilisation / rampe : WTR réel = val×10 + 3500 ms.
+        # IMPORTANT : le contrôleur DÉMARRE à la valeur SSS (souvent 31 = max)
+        # puis rampe vers STF pendant WTR. On relit donc STF APRÈS la
+        # stabilisation, pas avant (sinon on lit SSS et non la cible).
         try:
             wtr = self._aps.get_wait_time_ramping()
             self._settle_s = (wtr * 10 + 3500) / 1000.0
         except Exception:
             self._settle_s = 4.0
-        self._log(f"[banc] {freq_hz} Hz : STF={stf} (lu {applied}), "
+        self._log(f"[banc] {freq_hz} Hz : STF={stf} demandé, "
                   f"stabilisation {self._settle_s:.1f}s")
         time.sleep(self._settle_s)
+
+        # Relecture informative après rampe (n'altère pas le déroulé)
+        try:
+            applied = self._aps.get_stiffness()
+            if applied != stf:
+                self._log(f"[banc]   STF après rampe : STF?={applied} (demandé {stf})")
+        except Exception:
+            pass
         return stf
 
     def _servo_amplitude(self, freq_hz: float, target_g: float) -> tuple[float, float]:
