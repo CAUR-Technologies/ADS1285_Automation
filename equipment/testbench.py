@@ -238,13 +238,20 @@ class TestBench:
         self._aps_started = True
         self._current_stf = stf
 
-        # Vérification : relire la rigidité réellement appliquée
+        # Vérification : relire la rigidité réellement appliquée (STF?).
+        # On NE masque PAS un échec : si la relecture ne correspond pas (ou
+        # échoue), on le signale — c'est le diagnostic « la commande est-elle
+        # vraiment prise par l'appareil ».
         try:
             applied = self._aps.get_stiffness()
-            if applied != stf:
-                self._log(f"[banc] ⚠ STF demandé={stf} mais lu={applied}")
-        except Exception:
-            applied = stf
+            if applied == stf:
+                self._log(f"[banc] STF={stf} confirmé par relecture (STF?={applied})")
+            else:
+                self._log(f"[banc] ⚠ STF demandé={stf} mais relu STF?={applied} "
+                          f"— l'appareil n'applique PAS la rigidité")
+        except Exception as e:    # noqa: BLE001
+            applied = "?"
+            self._log(f"[banc] ⚠ STF? illisible ({e}) — application non confirmée")
 
         # Temps de stabilisation : WTR réel = val×10 + 3500 ms
         try:
