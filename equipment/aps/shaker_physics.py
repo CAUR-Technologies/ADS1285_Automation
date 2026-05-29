@@ -161,20 +161,23 @@ def stiffness_for_freq(freq_hz: float) -> int:
     la vibration. On choisit donc une stiffness d'autant plus faible que la
     frequence est basse.
 
-    Bandes (milieu de la plage recommandee dans equipment/CLAUDE.md) :
-        f < 1 Hz       -> STF 3   (tres faible)
-        1 <= f < 10    -> STF 10
-        10 <= f < 50   -> STF 20
-        f >= 50 Hz     -> STF 28
+    Bandes abaissees empiriquement (essais 2026-05-29) : a STF >= 10 le
+    controleur de position annulait la vibration (mesure ~0 g, mouvement
+    saccade) ; a STF = 3 elle passe et le servo converge, meme au plus grand
+    deplacement (~15 mm a basse frequence) — donc la rigidite faible tient
+    aussi la charge statique verticale.
+        f < 10 Hz      -> STF 3
+        10 <= f < 50   -> STF 5
+        f >= 50 Hz     -> STF 8
+    A ajuster selon le comportement (trop raide -> annule ; trop souple ->
+    derive de position).
     """
-    if freq_hz < 1.0:
+    if freq_hz < 10.0:
         return 3
-    elif freq_hz < 10.0:
-        return 10
     elif freq_hz < 50.0:
-        return 20
+        return 5
     else:
-        return 28
+        return 8
 
 
 def accel_to_volts(accel_g: float, sensitivity_v_per_g: float) -> float:

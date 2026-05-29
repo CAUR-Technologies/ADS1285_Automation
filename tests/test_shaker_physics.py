@@ -110,13 +110,14 @@ def test_target_limite_vitesse():
 
 
 def test_stiffness_bandes():
+    # Bareme abaisse (STF>=10 annulait la vibration sur le banc)
     assert sp.stiffness_for_freq(0.5) == 3
-    assert sp.stiffness_for_freq(1.0) == 10
-    assert sp.stiffness_for_freq(9.9) == 10
-    assert sp.stiffness_for_freq(10.0) == 20
-    assert sp.stiffness_for_freq(49.9) == 20
-    assert sp.stiffness_for_freq(50.0) == 28
-    assert sp.stiffness_for_freq(100.0) == 28
+    assert sp.stiffness_for_freq(1.0) == 3
+    assert sp.stiffness_for_freq(9.9) == 3
+    assert sp.stiffness_for_freq(10.0) == 5
+    assert sp.stiffness_for_freq(49.9) == 5
+    assert sp.stiffness_for_freq(50.0) == 8
+    assert sp.stiffness_for_freq(100.0) == 8
 
 
 def test_conversion_volts_g():
