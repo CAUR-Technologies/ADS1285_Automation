@@ -178,6 +178,12 @@ class TestBench:
         self._log("[banc] centrage ZER (statique, sans signal)…")
         self._safe_shutdown()
         self._aps.set_zero_position(0)
+        # Démarrage souple (SSS bas) : éviter d'engager l'armature à rigidité max
+        # (SSS=31 d'usine), qui sur le vertical la projette en butée haute.
+        try:
+            self._aps.set_stiffness_start_value(3)
+        except Exception:
+            pass
         self._aps.start()
         self._aps_started = True
         self._current_stf = None     # forcera la ré-application de la stiffness
@@ -233,8 +239,16 @@ class TestBench:
             self._aps.stop()
             self._aps_started = False
 
-        self._aps.set_stiffness(stf)      # STF (cible) AVANT STA
-        self._aps.start()                 # STA : démarre à SSS puis rampe vers STF
+        # Démarrer DIRECTEMENT à la rigidité cible (SSS = STF) au lieu de la
+        # valeur d'usine SSS=31 (max) : un démarrage à 31 engage brutalement
+        # l'armature — sur l'axe vertical il la projette vers le haut (butée →
+        # sur-courant de l'ampli). Démarrer souple évite ce coup.
+        try:
+            self._aps.set_stiffness_start_value(stf)   # SSS = STF (démarrage souple)
+        except Exception as e:            # noqa: BLE001
+            self._log(f"[banc] SSS non réglé ({e})")
+        self._aps.set_stiffness(stf)      # STF (cible)
+        self._aps.start()                 # STA : démarre à SSS=STF, pas à 31
         self._aps_started = True
         self._current_stf = stf
 
