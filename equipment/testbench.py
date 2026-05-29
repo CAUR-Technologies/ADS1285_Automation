@@ -180,10 +180,17 @@ class TestBench:
 
         pmax = self._aps.get_position_max()
         pmin = self._aps.get_position_min()
-        asymmetry = (pmax + pmin) / 2.0
-        self._log(f"[banc] PMA={pmax} PMI={pmin} asym={asymmetry:.1f}")
+        # PMA/PMI sont des positions ADC 0..1023 ; le centre mécanique (ZER=0)
+        # est au milieu d'échelle (~511,5). L'asymétrie est l'écart du point
+        # milieu des extrêmes par rapport à ce centre — PAS la position absolue
+        # (sinon une armature parfaitement centrée à ~512 serait vue comme un
+        # décalage énorme et corrigée à tort).
+        center = 1023 / 2.0
+        asymmetry = (pmax + pmin) / 2.0 - center
+        self._log(f"[banc] PMA={pmax} PMI={pmin} centre={center:.0f} "
+                  f"asym={asymmetry:+.1f}")
 
-        # Correction grossière (les unités PMA/PMI sont en comptes ADC 0..1023)
+        # Correction grossière (comptes ADC ; 1 unité ZER ≈ 0,1 % de course)
         if abs(asymmetry) > 5:
             correction = int(-asymmetry / 10)
             correction = max(-99, min(99, correction))
