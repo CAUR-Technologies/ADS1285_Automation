@@ -3,12 +3,17 @@
 ## Matériel : APS 0109 Position Controller (SPEKTRA)
 
 ### Liaison série
-- Baud : 19200
-- Bits start/stop : 1/1
-- Parité : aucune
-- Terminaison : `\x00` (octet nul, $0)
-- Réponse OK : `COMMANDE OK`
-- Réponse erreur : `ERR` (détail via `GES`)
+- Baud : **19200**, 8 bits, parité aucune, 1 stop
+- Terminaison de commande : `\x00` (octet nul)
+- **Format de réponse (confirmé matériel, fw 1.02.01)** : `<commande> <valeur> OK`,
+  terminée par `\x00`. Exemples :
+  - `FWV?\x00` → `FWV? 1.02.01 OK`
+  - `SER?\x00` → `SER? 209 OK`
+  - `ZER?\x00` → `ZER? 0 OK`
+  - commandes de réglage sans valeur → `<commande> OK`
+- **Erreur** : la réponse contient le token `ERR` (détail via `GES`).
+- ⚠️ La réponse **n'est PAS** « COMMANDE OK » (erreur d'une version antérieure
+  de ce doc). Le driver extrait la valeur entre l'écho de commande et `OK`.
 
 ### Commandes RS232
 

@@ -31,14 +31,28 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "num_samples":     "1024",
         "register_map":    r"C:\Program Files (x86)\Texas Instruments\ADS1285 EVM\Register Map.xml",
         "python32_path":   r"C:\Python311-32\python.exe",
+        # Tension crete pleine echelle de l'entree (V) a la PGA gain utilisee.
+        # ADS1285 : +/-2,5 V a gain 1 (independant de VREF). Diviser par le gain
+        # PGA si un gain > 1 est programme. Sert au calcul de la vitesse max
+        # geophone (anti-saturation).
+        "full_scale_vpeak": "2.5",
     },
     "APS": {
-        "baud":                       "9600",
+        "baud":                       "19200",   # APS 0109 : 19200 baud (spec)
         "timeout":                    "2.0",
         "controller_vertical_port":   "COM3",
         "controller_horizontal_port": "COM4",
         "amplifier_vertical_port":    "COM5",
         "amplifier_horizontal_port":  "COM6",
+        # Knobs de l'ampli APS 125 — saisie manuelle (ampli sans interface serie),
+        # traces avec chaque etalonnage (regle d'invalidation "knobs modifies").
+        # gain : Variable Gain (dB) -> definit H_banc.
+        # current_limit : Current Limit A(RMS) -> protection, tracee pour
+        #   tracabilite/diagnostic d'ecretage (n'entre pas dans le calcul).
+        "amplifier_gain_vertical":          "",
+        "amplifier_gain_horizontal":        "",
+        "amplifier_current_limit_vertical":   "",
+        "amplifier_current_limit_horizontal": "",
     },
     "Wavetek": {
         "port":    "COM5",
@@ -50,6 +64,52 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "ai_channels":        "ai0,ai1",
         "sample_rate":        "10000",
         "samples_per_channel": "1000",
+        # Index (dans ai_channels) de l'accelerometre de reference par axe :
+        # un accelero par axe (ex. ai0=V -> 0, ai1=H -> 1).
+        "ref_channel_vertical":   "0",
+        "ref_channel_horizontal": "1",
+    },
+    "Shaker": {
+        # APS 113 : demi-course mecanique +/-38 mm
+        "stroke_mm":                 "38.0",
+        # Fraction de l'enveloppe stroke visee (marge de securite overtravel)
+        "envelope_fraction":         "0.6",
+        # Plafond absolu d'acceleration en haute frequence (g)
+        "accel_cap_g":               "1.0",
+        # Acceleration plancher (g) — en dessous, point ignore (cible trop faible).
+        # Tres bas pour autoriser les geophones tres sensibles aux basses freq.
+        # (la qualite reelle est signalee par le SNR, pas par ce plancher).
+        "accel_floor_g":             "0.0002",
+        # Vitesse crete max (m/s) de SECOURS pour un geophone inconnu (absent de
+        # equipment/geophones.py). Pour les geophones connus, v_max est calcule
+        # automatiquement depuis leur sensibilite/amortissement.
+        "geophone_max_velocity_mps": "0.01",
+        # Fraction de la pleine echelle ADC visee au pic de reponse du geophone
+        # (marge anti-saturation : 0,5 = sortie max a 50 % de la pleine echelle).
+        "geophone_velocity_safety":  "0.5",
+        # Ignorer la limite de vitesse pour le transfert banc / verif quotidienne.
+        # true : aucun geophone monte pendant l'etalonnage du banc -> exciter a
+        # pleine amplitude (enveloppe stroke/accel) pour un meilleur SNR de H_banc.
+        "bench_transfer_ignore_velocity": "true",
+        # Sensibilite chaine accelerometre NI : Silicon Designs 2240-005 = 800 mV/g.
+        # Si la boite Spektra applique un gain, ajuster cette valeur.
+        "accel_sensitivity_v_per_g": "0.8",
+        # Servo d'amplitude en boucle fermee (volts Wavetek -> g mesure)
+        "servo_tolerance":           "0.05",   # tolerance relative (5%)
+        "servo_max_iter":            "8",       # iterations max du servo
+        "servo_start_vpp":           "0.1",     # amplitude Wavetek de depart (Vpp)
+        # Plafond d'amplitude Wavetek (Vpp). Au-dela, le servo declare la cible
+        # inatteignable a ce gain APS 125 (sortie anticipee). 10 Vpp = sortie
+        # typique max du 39A sur charge ouverte.
+        "servo_vpp_max":             "10.0",
+        # Modele de geophone candidat en cours de test (metadonnee calibration)
+        "geophone":                  "HG-5VHS",
+        # Bareme de rigidite (STF) par axe, adapte a la frequence. Format :
+        # "<seuil_Hz>:<STF>, ..., *:<STF>"  (STF applique si f < seuil ; '*' = au-dela).
+        # Reglable par axe car le vertical (gravite) peut differer de l'horizontal.
+        # A STF eleve le controleur annule la vibration ; trop bas -> derive.
+        "stiffness_vertical":        "10:3, 50:5, *:8",
+        "stiffness_horizontal":      "10:3, 50:5, *:8",
     },
     "General": {
         "data_output_dir": "data",

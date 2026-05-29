@@ -41,6 +41,10 @@ htmlcov/
 # Configuration locale
 config.ini
 *.log
+logs/
+
+# Références d'étalonnage (spécifiques à l'installation)
+reference/
 
 # Données
 data/

@@ -1,114 +1,67 @@
 # CLAUDE.md
 
-## Matériel : Wavetek Model 39A — Générateur de fonction
+## Matériel : Wavetek Model 39A — Générateur de fonction / arbitraire 40 MS/s
 
-### Liaison série
-- Baud : 9600 (configurable)
-- Bits start/stop : 1/1
-- Parité : aucune
-- Data bits : 8
-- Terminaison : `\r\n` (CRLF)
-- Echo : dépend du mode instrument
+> ⚠️ Le 39A n'utilise **PAS** le SCPI. Les commandes ci-dessous proviennent du
+> manuel opérateur (réf. 1463827, sections Remote Commands p.68-78). Une version
+> antérieure de ce fichier supposait à tort du SCPI (`FUNC`/`FREQ`/`VOLT`/`OUTP`)
+> — ces mnémoniques sont rejetées (bip « Command Error ») par l'appareil.
 
-### Protocole SCPI-like
+### Liaison série (RS232)
+- Baud : **9600 maximum**, variable (réglé sur l'appareil)
+- Format : 8 bits, parité aucune, 1 stop
+- **Handshaking XON/XOFF requis** (`xonxoff=True`)
+- Connecteur 9 broches : TXD=2, RXD=3, GND=5 (mode non-adressable, 3 fils)
+- **Terminateur de commande : LF (0Ah)** ; le CR (0Dh) est ignoré
+- Réponse : terminée par **CR LF** (0Dh 0Ah)
+- Séparateur de commandes multiples : `;`
+- Commandes insensibles à la casse ; bit 7 ignoré
 
-La Wavetek 39A utilise un protocole basé sur SCPI (Standard Commands for Programmable Instruments) avec syntaxe `COMMANDE [paramètre]`.
+### Pré-requis côté appareil
+Sur l'écran **REMOTE SETUP** (touche UTILITY → remote) :
+- `interface: RS232`
+- `baud rate: 9600`
+- En 3 fils (TXD/RXD/GND) l'appareil est en mode **non-adressable** : on envoie
+  les commandes directement, sans séquence d'adressage.
 
-#### Formes d'onde supportées
+### Commandes utilisées par le driver
 
-```
-SINE      → Sinusoïde
-SQUARE    → Carré
-TRIANGLE  → Triangle
-RAMP      → Rampe
-PULSE     → Impulsion
-NOISE     → Bruit blanc
-DC        → Tension continue
-```
+| Fonction | Commande | Exemple |
+|----------|----------|---------|
+| Forme d'onde | `WAVE <cpd>` | `WAVE SINE` |
+| Fréquence (Hz) | `WAVFREQ <nrf>` | `WAVFREQ 10.0` |
+| Période (s) | `WAVPER <nrf>` | `WAVPER 0.1` |
+| Unité d'amplitude | `AMPUNIT <cpd>` | `AMPUNIT VPP` |
+| Amplitude | `AMPL <nrf>` | `AMPL 1.0` |
+| Charge supposée | `ZLOAD <cpd>` | `ZLOAD OPEN` (hiZ) ou `TERM` (50Ω) |
+| Offset DC (V) | `DCOFFS <nrf>` | `DCOFFS 0.0` |
+| Sortie | `OUTPUT <cpd>` | `OUTPUT ON` / `OUTPUT OFF` |
+| Mode | `MODE <cpd>` | `MODE CONT` |
+| Identification | `*IDN?` | → `<NAME>,<model>,0,<version>` |
+| Reset défauts | `*RST` | |
+| Bip | `BEEP` | |
+| Retour local | `LOCAL` | |
 
-### Commandes principales
+### Mnémoniques de forme d'onde (`WAVE`)
+`SINE`, `SQUARE`, `TRIANG`, `DC`, `POSRMP` (rampe +), `NEGRMP` (rampe −),
+`COSINE`, `HAVSIN`, `HAVCOS`, `SINC`, `PULSE`, `PULSTRN`, `ARB`, `SEQ`.
 
-| Commande | Format | Description | Exemple |
-|----------|--------|-------------|---------|
-| **FUNC** | `FUNC <WAVEFORM>` | Sélectionne la forme d'onde | `FUNC SINE` |
-| **FREQ** | `FREQ <value>` | Fréquence en Hz | `FREQ 1000.0` |
-| **VOLT** | `VOLT <value> VPP` | Amplitude en Volts peak-to-peak | `VOLT 2.5 VPP` |
-| **VOLT:OFFS** | `VOLT:OFFS <value>` | Offset DC en Volts | `VOLT:OFFS 0.5` |
-| **OUTP** | `OUTP ON\|OFF` | Sortie activée/désactivée | `OUTP ON` |
-| **\*IDN?** | `*IDN?` | Identification (query) | → `Wavetek 39A` |
-| **\*RST** | `*RST` | Réinitialise l'instrument | `*RST` |
+> Pas de forme d'onde « noise ». triangle = `TRIANG`, rampe = `POSRMP`/`NEGRMP`.
 
-### Exemple de séquence type
+### Plages (Specifications)
+| Paramètre | Plage |
+|-----------|-------|
+| Fréquence (sinus) | 0,1 mHz – 16 MHz |
+| Amplitude | 5 mV – 20 Vpp circuit ouvert (2,5 mV – 10 Vpp sur 50 Ω) |
+| Offset DC | ±10 V (offset + crête signal ≤ ±10 V) |
 
-```python
-with Wavetek39A() as gen:
-    # Identification
-    id_str = gen.identify()  # → "*IDN?\"
-    
-    # Configuration
-    gen.set_waveform("sine")           # Sinusoïde
-    gen.set_frequency(10.0)             # 10 Hz
-    gen.set_amplitude(1.5)              # 1.5 Vpp
-    gen.set_offset(0.0)                 # Pas d'offset
-    
-    # Activation
-    gen.enable_output()                 # Sortie ON
-    
-    # ... mesures/acquisition ...
-    
-    # Désactivation
-    gen.disable_output()                # Sortie OFF
-    
-    # Réinitialisation
-    gen.reset()                         # État par défaut
-```
-
-### Plages typiques
-
-| Paramètre | Min | Max | Unité | Notes |
-|-----------|-----|-----|-------|-------|
-| Fréquence | 0.1 | 10 000 | Hz | Dépend de la forme d'onde |
-| Amplitude | 0 | 10 | Vpp | Amplitude crête-à-crête |
-| Offset | -5 | +5 | V | Décalage DC autour de 0V |
-| Duty cycle | 10 | 90 | % | Pour SQUARE, PULSE, RAMP |
+### Codes d'erreur / diagnostic
+- Une commande non comprise → **bip** + message « Command Error » (bit 5 du
+  Standard Event Status Register). Si chaque commande bipe → mauvais mnémonique
+  (SCPI au lieu du protocole natif) ou appareil pas en mode RS232.
+- `*IDN?` sans réponse → vérifier interface RS232 sélectionnée, baud, terminateur.
 
 ### Notes de conception
-
-1. **Délai de stabilisation** : Après changement de fréquence, ajouter un délai (≈100ms) avant acquisition
-2. **Réponse query** : Les commandes avec `?` retournent une valeur (ex: `FREQ?` → `1000.000`)
-3. **Echo** : L'instrument peut renvoyer l'écho de la commande reçue (configurable en menu)
-4. **Timeout** : Prévoir un timeout série suffisant (≥200ms) pour les réponses
-5. **Initialisation** : Toujours utiliser `*RST` avant une nouvelle séquence si état initial inconnu
-
-### Codes d'erreur
-
-L'instrument n'a pas de système d'erreur formel SCPI. Les problèmes courants :
-- Syntaxe invalide : aucune réponse ou écho seul
-- Valeur hors plage : peut être acceptée avec saturation
-- Port fermé : `RuntimeError` levée par la classe
-
-### Intégration typique
-
-```python
-from equipment.wavetek import Wavetek39A
-
-# Configuration d'un balayage fréquentiel
-frequencies = [1, 2, 5, 10, 20, 50, 100, 200]
-
-with Wavetek39A() as gen:
-    gen.set_waveform("sine")
-    gen.set_amplitude(1.0)
-    
-    for freq in frequencies:
-        gen.set_frequency(freq)
-        time.sleep(0.5)  # Stabilisation
-        # ... acquisition ...
-    
-    gen.disable_output()
-```
-
-### Ressources
-
-- Manuel Wavetek 39A : Consulter le datasheet constructeur
-- Documentation SCPI : https://www.ivifoundation.org/
-- Protocole : Standard SCPI simplifié pour fonction generators
+1. Délai de stabilisation ~100 ms après changement de fréquence avant acquisition.
+2. Les commandes de réglage ne renvoient rien ; seules les query (`?`) répondent.
+3. XON/XOFF : l'appareil envoie XOFF quand sa file de 256 octets se remplit.

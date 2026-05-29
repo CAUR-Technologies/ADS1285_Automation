@@ -12,7 +12,9 @@ Usage :
 import os
 import sys
 import time
+import json
 import threading
+import traceback
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
@@ -29,18 +31,47 @@ from config.settings import (
     ADS1285_BRIDGE_PORT, ADS1285_SAMPLE_RATE, ADS1285_NUM_SAMPLES,
     WAVETEK_PORT, WAVETEK_BAUD,
     APS_CONTROLLER_VERTICAL_PORT, APS_CONTROLLER_HORIZONTAL_PORT,
+    APS125_GAIN_VERTICAL, APS125_GAIN_HORIZONTAL,
+    APS125_CURRENT_LIMIT_VERTICAL, APS125_CURRENT_LIMIT_HORIZONTAL,
     NI_DEVICE_NAME, NI_AI_CHANNELS, NI_SAMPLE_RATE, NI_SAMPLES_PER_CHANNEL,
+    NI_REF_CHANNEL_VERTICAL, NI_REF_CHANNEL_HORIZONTAL,
+    SHAKER_ENVELOPE_FRACTION, SHAKER_ACCEL_CAP_G, SHAKER_GEOPHONE,
+    SHAKER_GEOPHONE_MAX_VELOCITY_MPS, SHAKER_GEOPHONE_VELOCITY_SAFETY,
+    SHAKER_BENCH_IGNORE_VELOCITY, SHAKER_STIFFNESS_SCHEDULE,
+    ADS1285_FULL_SCALE_VPEAK,
     DATA_OUTPUT_DIR,
 )
+from constants import CAL_DAILY_FREQS_HZ, CAL_DAILY_TOL_DB, CAL_CROSS_AXIS_MAX_PCT
 from equipment.ads1285 import ADS1285
 from equipment.wavetek import Wavetek39A
 from equipment.aps import APSController
+from equipment.testbench import TestBench, TestBenchAborted
+from equipment.instrlog import get_logger
+from equipment import dsp
+from equipment import geophones
+import equipment.datastore as datastore
+
+# Dossier des references H_banc (vérification quotidienne)
+_REF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference")
 try:
     from equipment.accelerometer import Accelerometer
     _HAS_NIDAQMX = True
 except ImportError:
     _HAS_NIDAQMX = False
     Accelerometer = None
+
+
+# Modeles de geophones candidats a la calibration
+GEOPHONE_MODELS = [
+    "HG-5VHS",
+    "HG-6 HB",
+    "HG-6XT UB",
+    "HG-2 U",
+    "VAS-200 (V)",
+    "VAS-H-200",
+    "ST-2A (V)",
+    "ST-2A (H)",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +203,45 @@ class DeviceManager:
             self.instances[name] = None
             self.connected[name] = False
 
+    def make_testbench(self, axis: str,
+                       fraction: float | None = None,
+                       accel_cap_g: float | None = None,
+                       geophone_max_velocity_mps: float | None = None) -> TestBench:
+        """Construit un TestBench a partir des instruments connectes.
+
+        Wavetek + APS (axe actif) + accelerometre sont requis ; l'ADS1285
+        (geophone) est optionnel (sensibilite calculee seulement si present).
+        Leve RuntimeError en listant ce qui manque.
+        """
+        missing = []
+        wav = self.instances.get("wavetek")
+        if not (wav and self.connected["wavetek"]):
+            missing.append("Wavetek")
+        accel = self.instances.get("accel")
+        if not (accel and self.connected["accel"]):
+            missing.append("Accelerometre")
+        ctrl_key = "aps_ctrl_v" if axis == "vertical" else "aps_ctrl_h"
+        aps = self.instances.get(ctrl_key)
+        if not (aps and self.connected[ctrl_key]):
+            missing.append(f"APS Ctrl {axis}")
+        if missing:
+            raise RuntimeError("Calibration impossible — non connecte : "
+                               + ", ".join(missing))
+
+        ads = self.instances.get("ads1285") if self.connected["ads1285"] else None
+        # Canal de l'accéléromètre de référence selon l'axe (un par axe)
+        ref_channel = (NI_REF_CHANNEL_VERTICAL if axis == "vertical"
+                       else NI_REF_CHANNEL_HORIZONTAL)
+        kw = {"ref_channel": ref_channel,
+              "stiffness_schedule": SHAKER_STIFFNESS_SCHEDULE.get(axis)}
+        if fraction is not None:
+            kw["envelope_fraction"] = fraction
+        if accel_cap_g is not None:
+            kw["accel_cap_g"] = accel_cap_g
+        if geophone_max_velocity_mps is not None:
+            kw["geophone_max_velocity_mps"] = geophone_max_velocity_mps
+        return TestBench(wav, aps, accel, ads, **kw)
+
 
 # ---------------------------------------------------------------------------
 # Panneau gauche scrollable
@@ -221,12 +291,24 @@ class Application(tk.Tk):
         self._dm = DeviceManager()
         self._busy = False
         self._stop_event = threading.Event()
+        self._glog = get_logger("GUI")
 
         # Donnees d'acquisition
         self._last_adc = None          # list[int]
         self._last_accel = None        # np.ndarray | None
         self._last_rate = ADS1285_SAMPLE_RATE
-        self._sweep_results = {}       # {freq: {"adc": [...], "accel": array}}
+        # Resultats stockes PAR AXE (2 chaines shaker independantes V/H)
+        self._sweep_results = {"vertical": {}, "horizontal": {}}  # {axe: {freq: res}}
+        self._sweep_fit = {"vertical": None, "horizontal": None}  # ajustement (G0,f0,zeta)
+        self._sweep_save = {}          # contexte de sauvegarde incrémentale par axe
+        self._comparison_curves = []   # réponses chargées pour l'onglet Comparaison
+        self._bench_results = {"vertical": {}, "horizontal": {}}  # {axe: {freq: res}}
+        self._linearity_results = {"vertical": [], "horizontal": []}  # {axe: [entry]}
+        self._cross_results = {}       # {freq: entry} sensibilité transversale
+        self._noise_floor_g = {"vertical": None, "horizontal": None}  # g RMS par axe
+        # Valeurs des knobs APS 125 saisies par l'usager (ampli manuel, par axe)
+        self._aps125_gains = {"vertical": "", "horizontal": ""}
+        self._aps125_climits = {"vertical": "", "horizontal": ""}
 
         # Variables tkinter
         self._vars = {}
@@ -259,6 +341,10 @@ class Application(tk.Tk):
         # --- Barre de statut ---
         self._build_status_bar()
 
+        # Synchronise les champs dépendant de l'axe (port, gain/limite APS 125)
+        # sur l'axe par défaut sélectionné.
+        self._on_aps_axis_change()
+
     # ---------------------------------------------------------------
     # Panneau gauche — sections appareils
     # ---------------------------------------------------------------
@@ -274,6 +360,71 @@ class Application(tk.Tk):
         self._build_aps_section(parent)
         # Accelerometre
         self._build_accel_section(parent)
+        # Calibration banc (sweep géophone)
+        self._build_calibration_section(parent)
+
+    def _build_calibration_section(self, parent):
+        lf = ttk.LabelFrame(parent, text="  Calibration banc")
+        lf.pack(fill="x", padx=4, pady=3)
+        f = ttk.Frame(lf)
+        f.pack(fill="x", padx=5, pady=5)
+        f.columnconfigure(1, weight=1)
+
+        _geo_default = SHAKER_GEOPHONE if SHAKER_GEOPHONE in GEOPHONE_MODELS \
+            else GEOPHONE_MODELS[0]
+        self._row(f, "Géophone :",
+                  self._make_var("cal_geophone", _geo_default), 0,
+                  combo_values=GEOPHONE_MODELS, width=14)
+        self._row(f, "Fraction env. :",
+                  self._make_var("cal_fraction", SHAKER_ENVELOPE_FRACTION), 1)
+        self._row(f, "Plafond (g) :",
+                  self._make_var("cal_cap", SHAKER_ACCEL_CAP_G), 2)
+        self._row(f, "Bruit (s) :",
+                  self._make_var("cal_noise_s", "60"), 3)
+
+        bf = ttk.Frame(lf)
+        bf.pack(fill="x", padx=5, pady=(0, 3))
+        self._btn_cal_zero = ttk.Button(bf, text="Centrage ZER", width=12,
+                                        command=self._center_zero)
+        self._btn_cal_zero.pack(side="left", padx=(0, 4))
+        self._btn_noise = ttk.Button(bf, text="Plancher bruit", width=13,
+                                     command=self._measure_noise_floor)
+        self._btn_noise.pack(side="left")
+
+        bf2 = ttk.Frame(lf)
+        bf2.pack(fill="x", padx=5, pady=(0, 3))
+        self._btn_bench = ttk.Button(bf2, text="Transfert banc", width=12,
+                                     command=self._measure_bench_transfer)
+        self._btn_bench.pack(side="left", padx=(0, 4))
+        self._btn_set_ref = ttk.Button(bf2, text="Définir réf.", width=13,
+                                       command=self._set_reference_hbanc)
+        self._btn_set_ref.pack(side="left")
+
+        bf3 = ttk.Frame(lf)
+        bf3.pack(fill="x", padx=5, pady=(0, 3))
+        self._btn_linearity = ttk.Button(bf3, text="Linéarité", width=12,
+                                         command=self._do_linearity)
+        self._btn_linearity.pack(side="left", padx=(0, 4))
+        self._btn_daily = ttk.Button(bf3, text="Vérif. quotid.", width=13,
+                                     command=self._do_daily_verification)
+        self._btn_daily.pack(side="left")
+
+        bf4 = ttk.Frame(lf)
+        bf4.pack(fill="x", padx=5, pady=(0, 3))
+        self._btn_campaign = ttk.Button(bf4, text="Campagne 2 axes auto (V+H)",
+                                        command=self._do_campaign)
+        self._btn_campaign.pack(side="left")
+
+        bf5 = ttk.Frame(lf)
+        bf5.pack(fill="x", padx=5, pady=(0, 3))
+        self._btn_cross = ttk.Button(bf5, text="Transversale (cross-axis)",
+                                     command=self._do_cross_axis)
+        self._btn_cross.pack(side="left")
+
+        self._lbl_noise_floor = ttk.Label(lf, text="", font=("", 8))
+        self._lbl_noise_floor.pack(anchor="w", padx=6)
+        ttk.Label(lf, text="(Balayage = sweep calibration géophone, axe courant)",
+                  font=("", 8)).pack(anchor="w", padx=6, pady=(0, 4))
 
     def _make_var(self, key, default=""):
         var = tk.StringVar(value=str(default))
@@ -332,7 +483,7 @@ class Application(tk.Tk):
         self._row(f, "Port :", self._make_var("wav_port", WAVETEK_PORT), 0)
         self._row(f, "Forme d'onde :", self._make_var("wav_wave", "sine"), 1,
                   combo_values=["sine", "square", "triangle", "ramp",
-                                "pulse", "noise", "dc"])
+                                "cosine", "pulse", "dc"])
         self._row(f, "Frequence (Hz) :", self._make_var("wav_freq", "10.0"), 2)
         self._row(f, "Amplitude (Vpp) :", self._make_var("wav_ampl", "1.0"), 3)
         self._row(f, "Offset (V) :", self._make_var("wav_offset", "0.0"), 4)
@@ -361,6 +512,15 @@ class Application(tk.Tk):
             "horizontal": APS_CONTROLLER_HORIZONTAL_PORT,
         }
         self._aps_ctrl_positions = {"vertical": "0.0", "horizontal": "0.0"}
+        # Knobs APS 125 (manuels) restaurés depuis la config
+        self._aps125_gains = {
+            "vertical":   APS125_GAIN_VERTICAL,
+            "horizontal": APS125_GAIN_HORIZONTAL,
+        }
+        self._aps125_climits = {
+            "vertical":   APS125_CURRENT_LIMIT_VERTICAL,
+            "horizontal": APS125_CURRENT_LIMIT_HORIZONTAL,
+        }
 
         outer = ttk.LabelFrame(parent, text="  APS — Table de vibration")
         outer.pack(fill="x", padx=4, pady=3)
@@ -369,7 +529,7 @@ class Application(tk.Tk):
         sel = ttk.Frame(outer)
         sel.pack(fill="x", padx=5, pady=(6, 4))
         ttk.Label(sel, text="Axe :").pack(side="left", padx=(0, 8))
-        self._vars["aps_axis"] = tk.StringVar(value="vertical")
+        self._vars["aps_axis"] = tk.StringVar(value="horizontal")
         for val, txt in [("vertical", "Vertical"), ("horizontal", "Horizontal")]:
             ttk.Radiobutton(sel, text=txt, variable=self._vars["aps_axis"],
                             value=val,
@@ -407,18 +567,36 @@ class Application(tk.Tk):
                                              command=self._set_aps_ctrl_active)
         self._btn_aps_ctrl_pos.pack(side="left")
 
+        # ── Amplificateur APS 125 (manuel — on enregistre la valeur du knob) ──
+        ttk.Separator(outer, orient="horizontal").pack(fill="x", padx=5, pady=3)
+        ttk.Label(outer, text="Amplificateur (APS 125 — manuel)",
+                  font=("", 9, "bold")).pack(anchor="w", padx=8, pady=(4, 0))
+        fa = ttk.Frame(outer)
+        fa.pack(fill="x", padx=8, pady=(3, 6))
+        fa.columnconfigure(1, weight=1)
+        self._row(fa, "Gain (dB/pos.) :",
+                  self._make_var("aps125_gain", self._aps125_gains["vertical"]), 0)
+        self._row(fa, "Limite courant (A RMS) :",
+                  self._make_var("aps125_climit", self._aps125_climits["vertical"]), 1)
+        ttk.Label(outer, text="(knobs manuels, tracés avec l'étalonnage ; "
+                  "si pas de graduation, noter la position ex. « 50% »)",
+                  font=("", 8)).pack(anchor="w", padx=8, pady=(0, 4))
 
     def _on_aps_axis_change(self):
-        """Permute les champs Ctrl vers le nouvel axe."""
+        """Permute les champs Ctrl + gain ampli vers le nouvel axe."""
         prev = getattr(self, "_aps_prev_axis", None)
         if prev:
             self._aps_ctrl_ports[prev]    = self._vars["aps_ctrl_port"].get()
             self._aps_ctrl_positions[prev] = self._vars["aps_ctrl_pos"].get()
+            self._aps125_gains[prev]       = self._vars["aps125_gain"].get()
+            self._aps125_climits[prev]     = self._vars["aps125_climit"].get()
 
         axis = self._vars["aps_axis"].get()
         self._aps_prev_axis = axis
         self._vars["aps_ctrl_port"].set(self._aps_ctrl_ports[axis])
         self._vars["aps_ctrl_pos"].set(self._aps_ctrl_positions[axis])
+        self._vars["aps125_gain"].set(self._aps125_gains[axis])
+        self._vars["aps125_climit"].set(self._aps125_climits[axis])
 
         # Mettre a jour les boutons selon l'etat de connexion de cet axe
         ctrl_key = "aps_ctrl_v" if axis == "vertical" else "aps_ctrl_h"
@@ -501,11 +679,19 @@ class Application(tk.Tk):
         # Onglet Balayage
         tab_sweep = ttk.Frame(self._notebook)
         self._notebook.add(tab_sweep, text="  Balayage  ")
+        sweep_ctrl = ttk.Frame(tab_sweep)
+        sweep_ctrl.pack(fill="x")
+        ttk.Label(sweep_ctrl, text="Affichage :").pack(side="left", padx=(4, 2))
+        self._vars["sweep_view"] = tk.StringVar(value=self._SWEEP_VIEWS[0])
+        cb = ttk.Combobox(sweep_ctrl, textvariable=self._vars["sweep_view"],
+                          state="readonly", width=22, values=self._SWEEP_VIEWS)
+        cb.pack(side="left")
+        cb.bind("<<ComboboxSelected>>", lambda e: self._redraw_sweep())
         self._fig_sweep = Figure(figsize=(8, 5), dpi=100)
         self._ax_sweep = self._fig_sweep.add_subplot(111)
-        self._ax_sweep.set_title("Reponse frequentielle")
+        self._ax_sweep.set_title("Sensibilite geophone vs frequence")
         self._ax_sweep.set_xlabel("Frequence (Hz)")
-        self._ax_sweep.set_ylabel("Amplitude crete ADC")
+        self._ax_sweep.set_ylabel("Sensibilite (counts/g)")
         self._ax_sweep.set_xscale("log")
         self._ax_sweep.grid(True, which="both", linestyle="--", alpha=0.5)
         self._fig_sweep.tight_layout()
@@ -513,6 +699,81 @@ class Application(tk.Tk):
         self._canvas_sweep.get_tk_widget().pack(fill="both", expand=True)
         self._toolbar_sweep = NavigationToolbar2Tk(self._canvas_sweep, tab_sweep)
         self._toolbar_sweep.update()
+
+        # Onglet Transfert banc (H_banc)
+        tab_bench = ttk.Frame(self._notebook)
+        self._notebook.add(tab_bench, text="  Transfert banc  ")
+        self._fig_bench = Figure(figsize=(8, 5), dpi=100)
+        self._ax_bench = self._fig_bench.add_subplot(111)
+        self._ax_bench.set_title("Fonction de transfert du banc H_banc(f)")
+        self._ax_bench.set_xlabel("Frequence (Hz)")
+        self._ax_bench.set_ylabel("H_banc (g/V)")
+        self._ax_bench.set_xscale("log")
+        self._ax_bench.grid(True, which="both", linestyle="--", alpha=0.5)
+        self._fig_bench.tight_layout()
+        self._canvas_bench = FigureCanvasTkAgg(self._fig_bench, master=tab_bench)
+        self._canvas_bench.get_tk_widget().pack(fill="both", expand=True)
+        self._toolbar_bench = NavigationToolbar2Tk(self._canvas_bench, tab_bench)
+        self._toolbar_bench.update()
+
+        # Onglet Linéarité
+        tab_lin = ttk.Frame(self._notebook)
+        self._notebook.add(tab_lin, text="  Linéarité  ")
+        self._fig_lin = Figure(figsize=(8, 5), dpi=100)
+        self._ax_lin = self._fig_lin.add_subplot(111)
+        self._ax_lin.set_title("Linearite — sensibilite vs niveau d'excitation")
+        self._ax_lin.set_xlabel("Acceleration excitation (g)")
+        self._ax_lin.set_ylabel("Sensibilite (counts/g)")
+        self._ax_lin.grid(True, linestyle="--", alpha=0.5)
+        self._fig_lin.tight_layout()
+        self._canvas_lin = FigureCanvasTkAgg(self._fig_lin, master=tab_lin)
+        self._canvas_lin.get_tk_widget().pack(fill="both", expand=True)
+        self._toolbar_lin = NavigationToolbar2Tk(self._canvas_lin, tab_lin)
+        self._toolbar_lin.update()
+
+        # Onglet Transversale (sensibilité transverse)
+        tab_cross = ttk.Frame(self._notebook)
+        self._notebook.add(tab_cross, text="  Transversale  ")
+        self._fig_cross = Figure(figsize=(8, 5), dpi=100)
+        self._ax_cross = self._fig_cross.add_subplot(111)
+        self._ax_cross.set_title("Sensibilite transversale vs frequence")
+        self._ax_cross.set_xlabel("Frequence (Hz)")
+        self._ax_cross.set_ylabel("Transversale (%)")
+        self._ax_cross.set_xscale("log")
+        self._ax_cross.grid(True, which="both", linestyle="--", alpha=0.5)
+        self._fig_cross.tight_layout()
+        self._canvas_cross = FigureCanvasTkAgg(self._fig_cross, master=tab_cross)
+        self._canvas_cross.get_tk_widget().pack(fill="both", expand=True)
+        self._toolbar_cross = NavigationToolbar2Tk(self._canvas_cross, tab_cross)
+        self._toolbar_cross.update()
+
+        # Onglet Comparaison (superposition de réponses sauvegardées)
+        tab_comp = ttk.Frame(self._notebook)
+        self._notebook.add(tab_comp, text="  Comparaison  ")
+        comp_ctrl = ttk.Frame(tab_comp)
+        comp_ctrl.pack(fill="x")
+        ttk.Button(comp_ctrl, text="Charger des balayages…",
+                   command=self._load_comparison).pack(side="left", padx=3, pady=2)
+        ttk.Button(comp_ctrl, text="Effacer",
+                   command=self._clear_comparison).pack(side="left", padx=3)
+        ttk.Label(comp_ctrl, text="Affichage :").pack(side="left", padx=(12, 2))
+        self._vars["comp_view"] = tk.StringVar(value=self._COMP_VIEWS[0])
+        cbc = ttk.Combobox(comp_ctrl, textvariable=self._vars["comp_view"],
+                           state="readonly", width=22, values=self._COMP_VIEWS)
+        cbc.pack(side="left")
+        cbc.bind("<<ComboboxSelected>>", lambda e: self._redraw_comparison())
+        self._fig_comp = Figure(figsize=(8, 5), dpi=100)
+        self._ax_comp = self._fig_comp.add_subplot(111)
+        self._ax_comp.set_title("Comparaison de reponses en frequence")
+        self._ax_comp.set_xlabel("Frequence (Hz)")
+        self._ax_comp.set_ylabel("Reponse normalisee (/G0)")
+        self._ax_comp.set_xscale("log")
+        self._ax_comp.grid(True, which="both", linestyle="--", alpha=0.5)
+        self._fig_comp.tight_layout()
+        self._canvas_comp = FigureCanvasTkAgg(self._fig_comp, master=tab_comp)
+        self._canvas_comp.get_tk_widget().pack(fill="both", expand=True)
+        self._toolbar_comp = NavigationToolbar2Tk(self._canvas_comp, tab_comp)
+        self._toolbar_comp.update()
 
     # ---------------------------------------------------------------
     # Barre d'actions
@@ -546,8 +807,9 @@ class Application(tk.Tk):
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y",
                                                     padx=8, pady=2)
         ttk.Label(bar, text="Frequences :").pack(side="left", padx=(0, 3))
-        self._make_var("sweep_freqs", "1, 2, 5, 10, 20, 50, 100")
-        e = ttk.Entry(bar, textvariable=self._vars["sweep_freqs"], width=30)
+        self._make_var("sweep_freqs",
+                       "0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50")
+        e = ttk.Entry(bar, textvariable=self._vars["sweep_freqs"], width=36)
         e.pack(side="left", padx=(0, 5))
         ttk.Label(bar, text="Stab. (s) :").pack(side="left")
         self._make_var("sweep_stab", "2.0")
@@ -593,10 +855,19 @@ class Application(tk.Tk):
         self._busy = busy
         state = "disabled" if busy else "normal"
         for btn in (self._btn_connect_all, self._btn_acquire,
-                    self._btn_sweep, self._btn_save):
+                    self._btn_sweep, self._btn_save, self._btn_cal_zero,
+                    self._btn_noise, self._btn_bench, self._btn_set_ref,
+                    self._btn_linearity, self._btn_daily, self._btn_campaign,
+                    self._btn_cross):
             btn.configure(state=state)
         self._btn_stop.configure(state="normal" if (busy and allow_stop)
                                   else "disabled")
+        # Le bouton "Tester ADC" suit l'etat de connexion quand on n'est pas occupe
+        if busy:
+            self._btn_ads_test.configure(state="disabled")
+        else:
+            self._btn_ads_test.configure(
+                state="normal" if self._dm.connected["ads1285"] else "disabled")
 
     # ===================================================================
     # Connexion / deconnexion des appareils
@@ -722,7 +993,20 @@ class Application(tk.Tk):
     def _on_error(self, exc):
         self._set_busy(False)
         self._set_status("Erreur")
+        # Journaliser l'erreur complète (avec traceback) dans logs/bench.log
+        tb = "".join(traceback.format_exception(type(exc), exc,
+                                                exc.__traceback__)).strip()
+        self._glog.error("Erreur worker : %s\n%s", exc, tb)
         messagebox.showerror("Erreur", str(exc))
+
+    def report_callback_exception(self, exc, val, tb):
+        """Capture toute exception non gérée dans un callback Tk -> journal + dialogue."""
+        detail = "".join(traceback.format_exception(exc, val, tb)).strip()
+        try:
+            self._glog.error("Exception non gérée (callback Tk) :\n%s", detail)
+        except Exception:
+            pass
+        messagebox.showerror("Erreur", str(val))
 
     # --- Test ADC single-shot ---
 
@@ -887,14 +1171,29 @@ class Application(tk.Tk):
 
         def _worker():
             dev = self._dm.instances["ads1285"]
+            duration = count / rate
+            accel_dev = (self._dm.instances.get("accel")
+                         if self._dm.connected.get("accel") else None)
+            # Acquérir l'accéléromètre EN PARALLÈLE du géophone, même fenêtre
+            accel_holder = [None]
+
+            def _acq_accel():
+                try:
+                    accel_holder[0] = accel_dev.acquire_seconds(duration)
+                except Exception:
+                    accel_holder[0] = None
+
+            th = None
+            if accel_dev is not None:
+                th = threading.Thread(target=_acq_accel, daemon=True)
+                th.start()
             if acq_mode == "ARM":
                 adc_data = dev.acquire_arm(count, rate)
             else:
                 adc_data = dev.acquire(count, rate)
-            accel_data = None
-            if self._dm.connected.get("accel") and self._dm.instances.get("accel"):
-                accel_data = self._dm.instances["accel"].acquire()
-            return adc_data, accel_data
+            if th is not None:
+                th.join()
+            return adc_data, accel_holder[0]
 
         def _on_done(result):
             adc_data, accel_data = result
@@ -903,7 +1202,11 @@ class Application(tk.Tk):
             self._progress.stop()
             self._progress.configure(mode="determinate", value=0)
             self._set_busy(False)
-            self._set_status(f"{len(adc_data)} echantillons acquis")
+            saved = self._autosave_acquisition()
+            msg = f"{len(adc_data)} echantillons acquis"
+            if saved:
+                msg += f" · {os.path.basename(saved)}"
+            self._set_status(msg)
             self._update_time_plot()
             self._update_fft_plot()
             self._notebook.select(0)  # aller sur l'onglet Temporel
@@ -919,92 +1222,846 @@ class Application(tk.Tk):
     # Balayage frequentiel
     # ===================================================================
 
+    def _aps125_gain_for(self, axis: str) -> str:
+        """Gain APS 125 d'un axe — valeur live pour l'axe actif, sinon le dict."""
+        if axis == self._vars["aps_axis"].get():
+            return self._vars["aps125_gain"].get()
+        return self._aps125_gains.get(axis, "")
+
+    def _aps125_climit_for(self, axis: str) -> str:
+        """Limite courant APS 125 d'un axe (live pour l'axe actif, sinon dict)."""
+        if axis == self._vars["aps_axis"].get():
+            return self._vars["aps125_climit"].get()
+        return self._aps125_climits.get(axis, "")
+
+    def _geophone_vmax(self) -> float:
+        """Vitesse crête max (m/s) anti-saturation pour le géophone sélectionné.
+
+        Calculée depuis sa sensibilité/amortissement (equipment/geophones.py) et
+        la pleine échelle ADC ; repli sur la valeur de config si modèle inconnu."""
+        name = self._vars["cal_geophone"].get()
+        return geophones.max_safe_velocity_mps(
+            name, ADS1285_FULL_SCALE_VPEAK,
+            safety=SHAKER_GEOPHONE_VELOCITY_SAFETY,
+            fallback=SHAKER_GEOPHONE_MAX_VELOCITY_MPS)
+
+    def _bench_vmax(self) -> float:
+        """Vitesse max pour le transfert banc / vérif. quotidienne.
+
+        0 (limite désactivée) si aucun géophone n'est monté pendant
+        l'étalonnage du banc (bench_transfer_ignore_velocity) → excitation à
+        pleine amplitude pour un meilleur SNR de H_banc. Sinon plafond géophone."""
+        return 0.0 if SHAKER_BENCH_IGNORE_VELOCITY else self._geophone_vmax()
+
     def _do_sweep(self):
-        if not self._dm.connected["ads1285"]:
-            messagebox.showwarning("Balayage", "ADS1285 non connecte.")
-            return
-        if not self._dm.connected.get("wavetek"):
-            messagebox.showwarning("Balayage", "Wavetek non connecte.")
+        """Sweep de calibration géophone piloté par le TestBench (banc complet)."""
+        axis = self._vars["aps_axis"].get()
+        try:
+            fraction = float(self._vars["cal_fraction"].get())
+            cap = float(self._vars["cal_cap"].get())
+            bench = self._dm.make_testbench(axis, fraction=fraction,
+                                            accel_cap_g=cap,
+                                            geophone_max_velocity_mps=self._geophone_vmax())
+        except (ValueError, RuntimeError) as e:
+            messagebox.showwarning("Calibration", str(e))
             return
 
         try:
             freqs = [float(f.strip())
                      for f in self._vars["sweep_freqs"].get().split(",")]
-            stab = float(self._vars["sweep_stab"].get())
         except ValueError:
-            messagebox.showerror("Balayage",
-                                 "Frequences ou stabilisation invalides.")
+            messagebox.showerror("Calibration", "Fréquences invalides.")
             return
 
         rate = int(self._vars["ads_rate"].get())
         count = int(self._vars["ads_count"].get())
         self._last_rate = rate
-        self._sweep_results = {}
+        self._sweep_results[axis] = {}        # n'écrase que l'axe courant
         self._stop_event.clear()
         self._set_busy(True, allow_stop=True)
         self._progress.configure(mode="determinate", maximum=len(freqs), value=0)
-        self._notebook.select(2)  # aller sur l'onglet Balayage
+        self._notebook.select(2)  # onglet Balayage
 
-        # Configurer le Wavetek
-        wav = self._dm.instances["wavetek"]
-        wav.set_waveform(self._vars["wav_wave"].get())
-        wav.set_amplitude(float(self._vars["wav_ampl"].get()))
+        bench.set_stop_event(self._stop_event)
+        bench.set_logger(lambda m: self.after(0, self._set_status, m))
+        self._glog.info(f"[banc] {axis} géophone {self._vars['cal_geophone'].get()} : "
+                        f"vitesse max {self._geophone_vmax() * 1000:.1f} mm/s "
+                        f"(anti-saturation)")
+        self._sweep_save_begin(axis)   # ouvre le CSV incrémental (1 ligne/point)
 
         def _worker():
-            for i, freq in enumerate(freqs):
+            return bench.calibration_sweep(
+                freqs,
+                geophone_count=count,
+                geophone_rate=rate,
+                on_point=lambda res: self.after(0, self._on_sweep_point, axis, res),
+            )
+
+        def _on_done(results):
+            self._set_busy(False)
+            n_ok = sum(1 for r in results if not r.get("skipped"))
+            saved = self._sweep_save_end(axis)
+            self._redraw_sweep()
+            msg = f"Calibration {axis} terminée — {n_ok}/{len(results)} points"
+            fit = self._sweep_fit.get(axis)
+            if fit:
+                msg += (f" · f0={fit['f0']:.2f}Hz ζ={fit['zeta']:.2f} "
+                        f"(±{fit['rms_error_db']:.2f}dB)")
+            if saved:
+                msg += f" · {os.path.basename(saved)}"
+            self._set_status(msg)
+
+        def _on_err(exc):
+            self._set_busy(False)
+            if isinstance(exc, TestBenchAborted):
+                self._set_status("Calibration interrompue (sécurité)")
+                messagebox.showwarning("Calibration", str(exc))
+            else:
+                self._on_error(exc)
+
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
+    _AXIS_STYLE = {
+        "vertical":   ("tab:blue", "o-", "V"),
+        "horizontal": ("tab:red", "s-", "H"),
+    }
+
+    # Modes d'affichage de la réponse géophone (onglets Balayage / Comparaison)
+    _SWEEP_VIEWS = ["counts/g (brut)", "counts/(m/s) (vitesse)", "Normalisé (/G0)"]
+    _COMP_VIEWS = ["Normalisé (/G0)", "counts/(m/s) (vitesse)"]
+
+    @staticmethod
+    def _sweep_view_mode(view: str) -> str:
+        """Mappe le libellé de la combobox vers un mode interne."""
+        if "vitesse" in view:
+            return "velocity"
+        if "Normalis" in view:
+            return "norm"
+        return "raw"
+
+    def _fit_axis(self, axis: str):
+        """Ajuste le modèle géophone (G0,f0,zeta) sur la réponse vitesse d'un axe.
+
+        Retourne le dict d'ajustement ou None (< 4 points / scipy absent)."""
+        results = self._sweep_results.get(axis, {})
+        fdone = sorted(f for f in results
+                       if results[f].get("sensitivity_counts_per_g"))
+        if len(fdone) < 4:
+            return None
+        farr = np.array(fdone, dtype=float)
+        sg = np.array([results[f]["sensitivity_counts_per_g"] for f in fdone])
+        sv = dsp.velocity_sensitivity(sg, farr)
+        return dsp.fit_geophone_response(farr, sv)
+
+    def _redraw_sweep(self):
+        """Retrace l'onglet Balayage selon le mode d'affichage choisi
+        (counts/g, vitesse, ou normalisé), avec overlay du modèle ajusté."""
+        mode = self._sweep_view_mode(self._vars["sweep_view"].get())
+        geophone = self._vars["cal_geophone"].get()
+        ax = self._ax_sweep
+        ax.clear()
+        ax.set_xscale("log")
+        ax.grid(True, which="both", linestyle="--", alpha=0.5)
+        ax.set_xlabel("Frequence (Hz)")
+        if mode == "raw":
+            ax.set_yscale("linear")
+            ax.set_ylabel("Sensibilite (counts/g)")
+        elif mode == "velocity":
+            ax.set_yscale("log")
+            ax.set_ylabel("Sensibilite (counts/(m/s))")
+        else:
+            ax.set_yscale("log")
+            ax.set_ylabel("Reponse normalisee (/G0)")
+        ax.set_title(f"Reponse geophone vs frequence — {geophone}")
+
+        plotted = False
+        for ax_name, results in self._sweep_results.items():
+            fdone = sorted(f for f in results
+                           if results[f].get("sensitivity_counts_per_g"))
+            if not fdone:
+                continue
+            color, style, lbl = self._AXIS_STYLE[ax_name]
+            farr = np.array(fdone, dtype=float)
+            sg = np.array([results[f]["sensitivity_counts_per_g"] for f in fdone])
+            sv = dsp.velocity_sensitivity(sg, farr)
+            fit = self._fit_axis(ax_name)
+            self._sweep_fit[ax_name] = fit
+            if mode == "raw":
+                y = sg
+            elif mode == "velocity":
+                y = sv
+            else:
+                g0 = fit["G0"] if fit else float(np.max(sv))
+                y = sv / g0 if g0 > 0 else sv
+            label = lbl
+            if fit:
+                label = f"{lbl}  f0={fit['f0']:.2f}Hz ζ={fit['zeta']:.2f}"
+            ax.plot(farr, y, style, color=color, label=label)
+            plotted = True
+            # Overlay du modèle ajusté (modes vitesse / normalisé)
+            if fit and mode in ("velocity", "norm"):
+                fg = np.logspace(np.log10(farr.min()), np.log10(farr.max()), 200)
+                mv = dsp.geophone_velocity_response(fg, fit["G0"], fit["f0"],
+                                                    fit["zeta"])
+                my = mv if mode == "velocity" else mv / fit["G0"]
+                ax.plot(fg, my, "-", color=color, alpha=0.4, linewidth=1)
+        if plotted:
+            ax.legend(fontsize=8)
+        self._fig_sweep.tight_layout()
+        self._canvas_sweep.draw_idle()
+
+    def _on_sweep_point(self, axis: str, res: dict):
+        freq = res["freq_hz"]
+        # Tracer l'axe + les knobs ampli dans le résultat (traçabilité)
+        res["axis"] = axis
+        res["aps125_gain"] = self._aps125_gain_for(axis)
+        res["aps125_current_limit"] = self._aps125_climit_for(axis)
+        self._sweep_results[axis][freq] = res
+        self._sweep_save_point(axis, freq, res)   # écrit ce point (ligne + ondes)
+        self._progress.configure(value=len(self._sweep_results[axis]))
+
+        if res.get("skipped"):
+            self._set_status(f"[{axis}] {freq} Hz ignoré — {res.get('note', '')}")
+        else:
+            self._set_status(
+                f"[{axis}] {freq} Hz : {res['measured_g']:.4g} g, "
+                f"STF {res['stiffness']}, dépl. {res['displacement_mm']:.2f} mm, "
+                f"marge {res['safety_margin_mm']:.1f} mm")
+
+        # Graphe réponse géophone vs fréquence (mode d'affichage courant)
+        self._redraw_sweep()
+
+    def _center_zero(self):
+        """Lance le centrage ZER statique du contrôleur APS de l'axe actif."""
+        axis = self._vars["aps_axis"].get()
+        try:
+            bench = self._dm.make_testbench(axis)
+        except RuntimeError as e:
+            messagebox.showwarning("Centrage ZER", str(e))
+            return
+        bench.set_logger(lambda m: self.after(0, self._set_status, m))
+        self._set_busy(True)
+
+        def _worker():
+            return bench.center_zero()
+
+        def _on_done(zer):
+            self._set_busy(False)
+            self._set_status(f"Centrage ZER terminé (ZER={zer})")
+
+        WorkerThread(self, _worker, _on_done, self._on_error).start()
+
+    def _measure_noise_floor(self):
+        """Mesure le plancher de bruit (accéléromètre, shaker à l'arrêt)."""
+        if not (self._dm.connected.get("accel") and self._dm.instances.get("accel")):
+            messagebox.showwarning("Plancher de bruit",
+                                   "Accéléromètre non connecté.")
+            return
+        try:
+            duration = float(self._vars["cal_noise_s"].get())
+        except ValueError:
+            messagebox.showerror("Plancher de bruit", "Durée invalide.")
+            return
+        accel = self._dm.instances["accel"]
+        axis = self._vars["aps_axis"].get()
+        ref_channel = (NI_REF_CHANNEL_VERTICAL if axis == "vertical"
+                       else NI_REF_CHANNEL_HORIZONTAL)
+        # Couper l'excitation si le Wavetek est connecté
+        if self._dm.connected.get("wavetek") and self._dm.instances.get("wavetek"):
+            try:
+                self._dm.instances["wavetek"].disable_output()
+            except Exception:
+                pass
+        self._set_busy(True)
+        self._set_status(f"Plancher de bruit {axis} ({duration:.0f}s, shaker arrêté)...")
+        self._progress.configure(mode="indeterminate")
+        self._progress.start(20)
+
+        def _worker():
+            # Acquérir la fenêtre brute (= mêmes éch. que measure_noise_floor)
+            # pour pouvoir sauvegarder les données temporelles du bruit.
+            arr = accel.acquire_seconds(duration)
+            ref = arr[ref_channel] if getattr(arr, "ndim", 1) == 2 else arr
+            ref = np.asarray(ref, dtype=float)
+            floor = dsp.rms(ref) / accel.sensitivity_v_per_g
+            return floor, ref, accel.sample_rate
+
+        def _on_done(result):
+            floor_g, signal, fs = result
+            self._progress.stop()
+            self._progress.configure(mode="determinate", value=0)
+            self._set_busy(False)
+            self._noise_floor_g[axis] = floor_g       # mémorisé par axe
+            self._lbl_noise_floor.configure(
+                text=f"Plancher {axis[0].upper()} : {floor_g:.4g} g RMS")
+            saved = self._autosave_noise(axis, floor_g, signal, fs, duration)
+            msg = f"Plancher de bruit {axis} = {floor_g:.4g} g RMS"
+            if saved:
+                msg += f" · {os.path.basename(saved)}"
+            self._set_status(msg)
+
+        def _on_err(exc):
+            self._progress.stop()
+            self._progress.configure(mode="determinate", value=0)
+            self._on_error(exc)
+
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
+    def _measure_bench_transfer(self):
+        """Mesure la fonction de transfert du banc H_banc(f) (étape 1)."""
+        axis = self._vars["aps_axis"].get()
+        try:
+            fraction = float(self._vars["cal_fraction"].get())
+            cap = float(self._vars["cal_cap"].get())
+            bench = self._dm.make_testbench(axis, fraction=fraction,
+                                            accel_cap_g=cap,
+                                            geophone_max_velocity_mps=self._bench_vmax())
+        except (ValueError, RuntimeError) as e:
+            messagebox.showwarning("Transfert banc", str(e))
+            return
+        try:
+            freqs = [float(f.strip())
+                     for f in self._vars["sweep_freqs"].get().split(",")]
+        except ValueError:
+            messagebox.showerror("Transfert banc", "Fréquences invalides.")
+            return
+
+        self._bench_results[axis] = {}        # n'écrase que l'axe courant
+        self._stop_event.clear()
+        self._set_busy(True, allow_stop=True)
+        self._progress.configure(mode="determinate", maximum=len(freqs), value=0)
+        self._notebook.select(3)  # onglet Transfert banc
+
+        bench.set_stop_event(self._stop_event)
+        bench.set_logger(lambda m: self.after(0, self._set_status, m))
+        if SHAKER_BENCH_IGNORE_VELOCITY:
+            self._glog.info(f"[banc] transfert {axis} : limite de vitesse IGNORÉE "
+                            f"(aucun géophone monté) — excitation pleine amplitude")
+        else:
+            self._glog.info(f"[banc] transfert {axis} : vitesse max "
+                            f"{self._bench_vmax() * 1000:.1f} mm/s")
+
+        def _worker():
+            return bench.measure_bench_transfer(
+                freqs,
+                on_point=lambda res: self.after(0, self._on_bench_point, axis, res),
+            )
+
+        def _on_done(results):
+            self._set_busy(False)
+            n_ok = sum(1 for r in results if not r.get("skipped"))
+            saved = self._autosave_bench(axis)
+            msg = f"Transfert banc {axis} terminé — {n_ok}/{len(results)} points"
+            if saved:
+                msg += f" · {os.path.basename(saved)}"
+            self._set_status(msg)
+
+        def _on_err(exc):
+            self._set_busy(False)
+            if isinstance(exc, TestBenchAborted):
+                self._set_status("Transfert banc interrompu (sécurité)")
+                messagebox.showwarning("Transfert banc", str(exc))
+            else:
+                self._on_error(exc)
+
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
+    def _on_bench_point(self, axis: str, res: dict):
+        freq = res["freq_hz"]
+        res["axis"] = axis
+        res["aps125_gain"] = self._aps125_gain_for(axis)
+        res["aps125_current_limit"] = self._aps125_climit_for(axis)
+        self._bench_results[axis][freq] = res
+        self._progress.configure(value=len(self._bench_results[axis]))
+
+        if res.get("skipped"):
+            self._set_status(f"[{axis}] {freq} Hz ignoré — {res.get('note', '')}")
+        else:
+            self._set_status(
+                f"[{axis}] {freq} Hz : H_banc {res.get('h_bench_g_per_v', 0):.4g} g/V, "
+                f"SNR {res.get('snr_db', 0):.1f} dB, THD {res.get('thd_percent', 0):.2f}%")
+
+        self._ax_bench.clear()
+        self._ax_bench.set_title("Fonction de transfert du banc H_banc(f)")
+        self._ax_bench.set_xlabel("Frequence (Hz)")
+        self._ax_bench.set_ylabel("H_banc (g/V)")
+        self._ax_bench.set_xscale("log")
+        self._ax_bench.grid(True, which="both", linestyle="--", alpha=0.5)
+        plotted = False
+        for ax_name, results in self._bench_results.items():
+            fdone = sorted(f for f in results
+                           if results[f].get("h_bench_g_per_v"))
+            if not fdone:
+                continue
+            color, style, lbl = self._AXIS_STYLE[ax_name]
+            hb = [results[f]["h_bench_g_per_v"] for f in fdone]
+            self._ax_bench.plot(fdone, hb, style, color=color, label=lbl)
+            plotted = True
+        if plotted:
+            self._ax_bench.legend()
+        self._fig_bench.tight_layout()
+        self._canvas_bench.draw_idle()
+
+    # ---- Référence H_banc (vérification quotidienne) ----
+
+    def _set_reference_hbanc(self):
+        """Enregistre le H_banc courant de l'axe actif comme référence."""
+        axis = self._vars["aps_axis"].get()
+        results = self._bench_results[axis]
+        ref = {str(f): results[f].get("h_bench_g_per_v")
+               for f in results if results[f].get("h_bench_g_per_v")}
+        if not ref:
+            messagebox.showwarning("Référence H_banc",
+                f"Aucune mesure H_banc pour l'axe {axis}.\n"
+                "Lancez d'abord « Transfert banc ».")
+            return
+        os.makedirs(_REF_DIR, exist_ok=True)
+        path = os.path.join(_REF_DIR, f"h_banc_{axis}.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"axis": axis,
+                       "date": datetime.now().isoformat(timespec="seconds"),
+                       "aps125_gain": self._aps125_gain_for(axis),
+                       "aps125_current_limit": self._aps125_climit_for(axis),
+                       "h_banc_g_per_v": ref}, fh, indent=2)
+        self._set_status(f"Référence H_banc {axis} enregistrée ({len(ref)} points)")
+
+    def _load_reference_hbanc(self, axis):
+        path = os.path.join(_REF_DIR, f"h_banc_{axis}.json")
+        if not os.path.isfile(path):
+            return None
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return {float(k): v for k, v in data.get("h_banc_g_per_v", {}).items()}
+
+    def _do_daily_verification(self):
+        """Vérif. rapide H_banc à 1/10/50 Hz vs référence enregistrée."""
+        axis = self._vars["aps_axis"].get()
+        reference = self._load_reference_hbanc(axis)
+        if not reference:
+            messagebox.showwarning("Vérification quotidienne",
+                f"Pas de référence H_banc pour l'axe {axis}.\n"
+                "Faites « Transfert banc » puis « Définir réf. ».")
+            return
+        try:
+            fraction = float(self._vars["cal_fraction"].get())
+            cap = float(self._vars["cal_cap"].get())
+            bench = self._dm.make_testbench(axis, fraction=fraction, accel_cap_g=cap,
+                                            geophone_max_velocity_mps=self._bench_vmax())
+        except (ValueError, RuntimeError) as e:
+            messagebox.showwarning("Vérification quotidienne", str(e))
+            return
+        daily = [f for f in CAL_DAILY_FREQS_HZ if f in reference]
+        freqs = daily if daily else sorted(reference.keys())
+        self._daily_results = []
+        self._stop_event.clear()
+        self._set_busy(True, allow_stop=True)
+        self._progress.configure(mode="determinate", maximum=len(freqs), value=0)
+        bench.set_stop_event(self._stop_event)
+        bench.set_logger(lambda m: self.after(0, self._set_status, m))
+
+        def _worker():
+            return bench.daily_verification(
+                reference, freqs=freqs,
+                on_point=lambda res: self.after(0, self._on_daily_point, res))
+
+        def _on_done(results):
+            self._set_busy(False)
+            valid = [r for r in results if not r.get("skipped")]
+            ok = all(r.get("pass") for r in valid)
+            worst = max((abs(r.get("deviation_db", 0)) for r in valid), default=0.0)
+            saved = self._autosave_daily(axis)
+            msg = (f"Vérif. {axis} : écart max {worst:.2f} dB — "
+                   + ("OK" if ok else "DÉRIVE"))
+            if saved:
+                msg += f" · {os.path.basename(saved)}"
+            self._set_status(msg)
+            if not ok:
+                messagebox.showwarning("Vérification quotidienne",
+                    f"Dérive détectée (écart max {worst:.2f} dB > "
+                    f"{CAL_DAILY_TOL_DB} dB).\nRefaire l'étalonnage complet du banc.")
+
+        def _on_err(exc):
+            self._set_busy(False)
+            if isinstance(exc, TestBenchAborted):
+                self._set_status("Vérification interrompue")
+            else:
+                self._on_error(exc)
+
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
+    def _on_daily_point(self, res: dict):
+        self._daily_results.append(res)
+        self._progress.configure(value=len(self._daily_results))
+        if res.get("skipped"):
+            self._set_status(f"{res['freq_hz']} Hz ignoré")
+        else:
+            self._set_status(
+                f"{res['freq_hz']} Hz : {res.get('deviation_db', 0):+.2f} dB "
+                f"({'OK' if res.get('pass') else 'DÉRIVE'})")
+
+    # ---- Linéarité ----
+
+    def _do_linearity(self):
+        axis = self._vars["aps_axis"].get()
+        if not self._dm.connected["ads1285"]:
+            messagebox.showwarning("Linéarité", "ADS1285 (géophone) non connecté.")
+            return
+        try:
+            fraction = float(self._vars["cal_fraction"].get())
+            cap = float(self._vars["cal_cap"].get())
+            bench = self._dm.make_testbench(axis, fraction=fraction, accel_cap_g=cap,
+                                            geophone_max_velocity_mps=self._geophone_vmax())
+            freqs = [float(f.strip())
+                     for f in self._vars["sweep_freqs"].get().split(",")]
+        except (ValueError, RuntimeError) as e:
+            messagebox.showwarning("Linéarité", str(e))
+            return
+        rate = int(self._vars["ads_rate"].get())
+        count = int(self._vars["ads_count"].get())
+        self._linearity_results[axis] = []
+        self._stop_event.clear()
+        self._set_busy(True, allow_stop=True)
+        self._progress.configure(mode="determinate", maximum=len(freqs), value=0)
+        self._notebook.select(4)  # onglet Linéarité
+        bench.set_stop_event(self._stop_event)
+        bench.set_logger(lambda m: self.after(0, self._set_status, m))
+
+        def _worker():
+            return bench.measure_linearity(
+                freqs, geophone_count=count, geophone_rate=rate,
+                on_point=lambda e: self.after(0, self._on_linearity_point, axis, e))
+
+        def _on_done(results):
+            self._set_busy(False)
+            ok = all(e["pass"] for e in results)
+            worst = max((e["linearity_error_db"] for e in results), default=0.0)
+            saved = self._autosave_linearity(axis)
+            msg = (f"Linéarité {axis} : erreur max {worst:.2f} dB — "
+                   + ("OK" if ok else "HORS TOL"))
+            if saved:
+                msg += f" · {os.path.basename(saved)}"
+            self._set_status(msg)
+
+        def _on_err(exc):
+            self._set_busy(False)
+            if isinstance(exc, TestBenchAborted):
+                self._set_status("Linéarité interrompue (sécurité)")
+            else:
+                self._on_error(exc)
+
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
+    def _on_linearity_point(self, axis: str, entry: dict):
+        self._linearity_results[axis].append(entry)
+        self._progress.configure(value=len(self._linearity_results[axis]))
+        self._set_status(
+            f"[{axis}] linéarité {entry['freq_hz']} Hz : "
+            f"{entry['linearity_error_db']:.2f} dB "
+            f"({'OK' if entry['pass'] else 'HORS TOL'})")
+
+        self._ax_lin.clear()
+        self._ax_lin.set_title("Linearite — sensibilite vs niveau d'excitation")
+        self._ax_lin.set_xlabel("Acceleration excitation (g)")
+        self._ax_lin.set_ylabel("Sensibilite (counts/g)")
+        self._ax_lin.grid(True, linestyle="--", alpha=0.5)
+        plotted = False
+        for ax_name, entries in self._linearity_results.items():
+            for e in entries:
+                pts = [p for p in e["levels"]
+                       if not p.get("skipped") and p.get("sensitivity_counts_per_g")]
+                if not pts:
+                    continue
+                pts.sort(key=lambda p: p["measured_g"])
+                xs = [p["measured_g"] for p in pts]
+                ys = [p["sensitivity_counts_per_g"] for p in pts]
+                self._ax_lin.plot(xs, ys, "o-",
+                                  label=f"{ax_name[0].upper()} {e['freq_hz']}Hz")
+                plotted = True
+        if plotted:
+            self._ax_lin.legend(fontsize=7)
+        self._fig_lin.tight_layout()
+        self._canvas_lin.draw_idle()
+
+    # ---- Campagne 2 axes (automatique) ----
+
+    def _do_campaign(self):
+        """Campagne 2 axes automatique : étalonne V puis H sans intervention.
+
+        Le splitter alimente les deux chaînes ; chaque axe a son accéléromètre
+        de référence (canal NI dédié) et son contrôleur APS. Le logiciel bascule
+        l'axe en interne — aucune manipulation physique entre les deux.
+        Nécessite les deux contrôleurs APS connectés.
+        """
+        try:
+            fraction = float(self._vars["cal_fraction"].get())
+            cap = float(self._vars["cal_cap"].get())
+            freqs = [float(f.strip())
+                     for f in self._vars["sweep_freqs"].get().split(",")]
+        except ValueError:
+            messagebox.showerror("Campagne", "Paramètres invalides.")
+            return
+        # Pré-valider que les deux axes sont disponibles
+        try:
+            self._dm.make_testbench("vertical", fraction=fraction, accel_cap_g=cap)
+            self._dm.make_testbench("horizontal", fraction=fraction, accel_cap_g=cap)
+        except RuntimeError as e:
+            messagebox.showwarning("Campagne 2 axes", str(e))
+            return
+
+        rate = int(self._vars["ads_rate"].get())
+        count = int(self._vars["ads_count"].get())
+        self._last_rate = rate
+        self._stop_event.clear()
+        self._set_busy(True, allow_stop=True)
+        self._notebook.select(2)
+
+        def _set_axis_ui(ax):
+            self._vars["aps_axis"].set(ax)
+            self._on_aps_axis_change()
+
+        def _worker():
+            for ax in ("vertical", "horizontal"):
                 if self._stop_event.is_set():
                     break
-                self.after(0, self._set_status,
-                           f"Balayage {i+1}/{len(freqs)} — {freq} Hz")
-                wav.set_frequency(freq)
-                time.sleep(stab)
-                if self._stop_event.is_set():
-                    break
-                adc_data = self._dm.instances["ads1285"].acquire(count, rate)
-                accel_data = None
-                if (self._dm.connected.get("accel")
-                        and self._dm.instances.get("accel")):
-                    accel_data = self._dm.instances["accel"].acquire()
-                self.after(0, self._on_sweep_point, freq, adc_data,
-                           accel_data, i + 1)
+                self.after(0, _set_axis_ui, ax)
+                bench = self._dm.make_testbench(ax, fraction=fraction,
+                                                accel_cap_g=cap,
+                                                geophone_max_velocity_mps=self._geophone_vmax())
+                bench.set_stop_event(self._stop_event)
+                bench.set_logger(lambda m: self.after(0, self._set_status, m))
+                bench.center_zero()
+                self._sweep_results[ax] = {}
+                self.after(0, lambda n=len(freqs): self._progress.configure(
+                    mode="determinate", maximum=n, value=0))
+                self.after(0, self._sweep_save_begin, ax)   # ouvre le CSV de l'axe
+                bench.calibration_sweep(
+                    freqs, geophone_count=count, geophone_rate=rate,
+                    on_point=lambda res, a=ax: self.after(0, self._on_sweep_point, a, res))
+                # Finalise la sauvegarde incrémentale de cet axe (thread principal)
+                self.after(0, self._sweep_save_end, ax)
             return None
 
         def _on_done(_):
             self._set_busy(False)
-            self._set_status("Balayage termine")
+            self._set_status("Campagne 2 axes terminée (V + H)")
 
-        WorkerThread(self, _worker, _on_done, self._on_error).start()
+        def _on_err(exc):
+            self._set_busy(False)
+            if isinstance(exc, TestBenchAborted):
+                self._set_status("Campagne interrompue (sécurité)")
+            else:
+                self._on_error(exc)
 
-    def _on_sweep_point(self, freq, adc_data, accel_data, step):
-        self._sweep_results[freq] = {"adc": adc_data, "accel": accel_data}
-        self._progress.configure(value=step)
-        # Mettre a jour le graphique balayage
-        freqs_done = sorted(self._sweep_results.keys())
-        adc_peaks = [max(abs(v) for v in self._sweep_results[f]["adc"])
-                     for f in freqs_done]
-        self._ax_sweep.clear()
-        self._ax_sweep.set_title("Reponse frequentielle")
-        self._ax_sweep.set_xlabel("Frequence (Hz)")
-        self._ax_sweep.set_ylabel("Amplitude crete ADC")
-        self._ax_sweep.set_xscale("log")
-        self._ax_sweep.grid(True, which="both", linestyle="--", alpha=0.5)
-        self._ax_sweep.plot(freqs_done, adc_peaks, "o-", color="tab:blue",
-                            label="ADC")
-        # Si on a des donnees accelerometre
-        if any(self._sweep_results[f]["accel"] is not None
-               for f in freqs_done):
-            accel_peaks = []
-            for f in freqs_done:
-                a = self._sweep_results[f]["accel"]
-                accel_peaks.append(float(np.max(np.abs(a))) if a is not None
-                                   else 0)
-            ax2 = self._ax_sweep.twinx()
-            ax2.plot(freqs_done, accel_peaks, "s--", color="tab:orange",
-                     label="Accel (V)")
-            ax2.set_ylabel("Amplitude accel. (V)")
-            ax2.legend(loc="upper left")
-        self._ax_sweep.legend(loc="upper right")
-        self._canvas_sweep.draw_idle()
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
+    # ---- Sensibilité transversale (cross-axis) ----
+
+    def _confirm_blocking(self, title: str, message: str) -> bool:
+        """Affiche un askokcancel sur le thread principal et attend la réponse
+        (appelé depuis un thread worker)."""
+        evt = threading.Event()
+        holder = {"ok": False}
+
+        def ask():
+            holder["ok"] = messagebox.askokcancel(title, message)
+            evt.set()
+
+        self.after(0, ask)
+        evt.wait()
+        return holder["ok"]
+
+    def _do_cross_axis(self):
+        """Sensibilité transversale en 2 phases : excitation le long de l'axe
+        sensible, puis perpendiculaire (remontage du géophone). Mute l'axe
+        non excité par STP du contrôleur."""
+        main_axis = self._vars["aps_axis"].get()
+        trans_axis = "horizontal" if main_axis == "vertical" else "vertical"
+        if not self._dm.connected["ads1285"]:
+            messagebox.showwarning("Transversale", "ADS1285 (géophone) requis.")
+            return
+        try:
+            fraction = float(self._vars["cal_fraction"].get())
+            cap = float(self._vars["cal_cap"].get())
+            freqs = [float(f.strip())
+                     for f in self._vars["sweep_freqs"].get().split(",")]
+            vmax = self._geophone_vmax()
+            bench_main = self._dm.make_testbench(main_axis, fraction=fraction,
+                                                 accel_cap_g=cap,
+                                                 geophone_max_velocity_mps=vmax)
+            bench_trans = self._dm.make_testbench(trans_axis, fraction=fraction,
+                                                  accel_cap_g=cap,
+                                                  geophone_max_velocity_mps=vmax)
+        except (ValueError, RuntimeError) as e:
+            messagebox.showwarning("Transversale", str(e))
+            return
+
+        rate = int(self._vars["ads_rate"].get())
+        count = int(self._vars["ads_count"].get())
+        self._last_rate = rate
+        self._cross_results = {}
+        self._stop_event.clear()
+        self._set_busy(True, allow_stop=True)
+        self._notebook.select(5)  # onglet Transversale
+
+        ctrl_key = lambda a: "aps_ctrl_v" if a == "vertical" else "aps_ctrl_h"
+        main_ctrl = self._dm.instances[ctrl_key(main_axis)]
+        trans_ctrl = self._dm.instances[ctrl_key(trans_axis)]
+
+        def _sweep_sens(bench, mute_ctrl, label):
+            self.after(0, self._set_status, f"Transversale — {label}")
+            try:
+                mute_ctrl.stop()         # STP : coupe l'AC de l'axe non mesuré
+            except Exception:
+                pass
+            bench.set_stop_event(self._stop_event)
+            bench.set_logger(lambda m: self.after(0, self._set_status, m))
+            bench.center_zero()
+            self.after(0, lambda n=len(freqs): self._progress.configure(
+                mode="determinate", maximum=n, value=0))
+            res = bench.calibration_sweep(freqs, geophone_count=count,
+                                          geophone_rate=rate, on_point=lambda r: None)
+            return {r["freq_hz"]: r.get("sensitivity_counts_per_g", 0.0)
+                    for r in res if not r.get("skipped")}
+
+        def _worker():
+            # Phase 1 : excitation le long de l'axe sensible
+            s_main = _sweep_sens(bench_main, trans_ctrl,
+                                 f"phase 1 — axe principal {main_axis}")
+            if self._stop_event.is_set():
+                return None
+            # Pause : remontage perpendiculaire
+            if not self._confirm_blocking(
+                    "Transversale — remontage",
+                    f"Remontez le géophone sur le shaker {trans_axis},\n"
+                    f"axe sensible PERPENDICULAIRE au mouvement.\n\n"
+                    "OK pour mesurer la réponse transverse, Annuler pour arrêter."):
+                return None
+            # Phase 2 : excitation perpendiculaire
+            s_trans = _sweep_sens(bench_trans, main_ctrl,
+                                  f"phase 2 — axe transverse {trans_axis}")
+            # Combinaison
+            for f in sorted(set(s_main) & set(s_trans)):
+                sm, st = s_main[f], s_trans[f]
+                pct = (st / sm * 100.0) if sm > 1e-12 else 0.0
+                entry = {"freq_hz": f, "s_main": sm, "s_trans": st,
+                         "cross_axis_pct": pct,
+                         "pass": pct <= CAL_CROSS_AXIS_MAX_PCT}
+                self._cross_results[f] = entry
+                self.after(0, self._on_cross_point, entry)
+            return None
+
+        def _on_done(_):
+            self._set_busy(False)
+            if self._cross_results:
+                worst = max(e["cross_axis_pct"] for e in self._cross_results.values())
+                ok = worst <= CAL_CROSS_AXIS_MAX_PCT
+                saved = self._autosave_cross()
+                msg = (f"Transversale : max {worst:.2f}% — "
+                       + ("OK" if ok else "HORS TOL"))
+                if saved:
+                    msg += f" · {os.path.basename(saved)}"
+                self._set_status(msg)
+            else:
+                self._set_status("Transversale : aucun point exploitable")
+
+        def _on_err(exc):
+            self._set_busy(False)
+            if isinstance(exc, TestBenchAborted):
+                self._set_status("Transversale interrompue (sécurité)")
+            else:
+                self._on_error(exc)
+
+        WorkerThread(self, _worker, _on_done, _on_err).start()
+
+    def _on_cross_point(self, entry: dict):
+        self._set_status(
+            f"{entry['freq_hz']} Hz : transversale {entry['cross_axis_pct']:.2f}% "
+            f"({'OK' if entry['pass'] else 'HORS TOL'})")
+        freqs_done = sorted(self._cross_results.keys())
+        self._ax_cross.clear()
+        self._ax_cross.set_title("Sensibilite transversale vs frequence")
+        self._ax_cross.set_xlabel("Frequence (Hz)")
+        self._ax_cross.set_ylabel("Transversale (%)")
+        self._ax_cross.set_xscale("log")
+        self._ax_cross.grid(True, which="both", linestyle="--", alpha=0.5)
+        if freqs_done:
+            pct = [self._cross_results[f]["cross_axis_pct"] for f in freqs_done]
+            self._ax_cross.plot(freqs_done, pct, "o-", color="tab:purple")
+            self._ax_cross.axhline(CAL_CROSS_AXIS_MAX_PCT, color="red",
+                                   linestyle="--", alpha=0.7,
+                                   label=f"seuil {CAL_CROSS_AXIS_MAX_PCT}%")
+            self._ax_cross.legend()
+        self._fig_cross.tight_layout()
+        self._canvas_cross.draw_idle()
+
+    # ---- Comparaison de réponses sauvegardées (onglet Comparaison) ----
+
+    def _load_comparison(self):
+        """Charge un ou plusieurs balayages NPZ et superpose leurs réponses."""
+        paths = filedialog.askopenfilenames(
+            initialdir=DATA_OUTPUT_DIR,
+            title="Choisir des balayages (.npz)",
+            filetypes=[("Balayage NumPy", "*.npz")])
+        loaded = 0
+        for p in paths:
+            try:
+                d = np.load(p, allow_pickle=True)
+                f = np.asarray(d["freq_hz"], dtype=float)
+                sg = np.asarray(d["summary_sensitivity_counts_per_g"], dtype=float)
+            except Exception as e:                      # noqa: BLE001
+                messagebox.showwarning(
+                    "Comparaison",
+                    f"{os.path.basename(p)} illisible ou incompatible : {e}")
+                continue
+            mask = (f > 0) & (sg > 0) & np.isfinite(f) & np.isfinite(sg)
+            f, sg = f[mask], sg[mask]
+            if len(f) == 0:
+                continue
+            sv = dsp.velocity_sensitivity(sg, f)
+            model = str(d["geophone_model"]) if "geophone_model" in d.files else "?"
+            axis = str(d["axis"]) if "axis" in d.files else ""
+            label = (f"{model} {axis}".strip()
+                     + f"  [{os.path.basename(p)}]")
+            self._comparison_curves.append({
+                "label": label, "f": f, "sv": sv,
+                "fit": dsp.fit_geophone_response(f, sv)})
+            loaded += 1
+        if loaded:
+            self._redraw_comparison()
+            self._set_status(f"Comparaison : {loaded} reponse(s) chargee(s) "
+                             f"({len(self._comparison_curves)} au total)")
+
+    def _clear_comparison(self):
+        self._comparison_curves = []
+        self._redraw_comparison()
+        self._set_status("Comparaison effacee")
+
+    def _redraw_comparison(self):
+        norm = "Normalis" in self._vars["comp_view"].get()
+        ax = self._ax_comp
+        ax.clear()
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.grid(True, which="both", linestyle="--", alpha=0.5)
+        ax.set_xlabel("Frequence (Hz)")
+        ax.set_ylabel("Reponse normalisee (/G0)" if norm
+                      else "Sensibilite (counts/(m/s))")
+        ax.set_title("Comparaison de reponses en frequence")
+        cmap = plt.get_cmap("tab10")
+        for i, c in enumerate(self._comparison_curves):
+            color = cmap(i % 10)
+            y = c["sv"]
+            if norm:
+                g0 = c["fit"]["G0"] if c["fit"] else float(np.max(c["sv"]))
+                y = c["sv"] / g0 if g0 > 0 else c["sv"]
+            label = c["label"]
+            if c["fit"]:
+                label += f"  f0={c['fit']['f0']:.2f} ζ={c['fit']['zeta']:.2f}"
+            ax.plot(c["f"], y, "o-", color=color, ms=4, label=label)
+        if self._comparison_curves:
+            ax.legend(fontsize=7)
+        self._fig_comp.tight_layout()
+        self._canvas_comp.draw_idle()
 
     def _do_stop(self):
         self._stop_event.set()
@@ -1088,8 +2145,11 @@ class Application(tk.Tk):
     # Sauvegarde
     # ===================================================================
 
+    def _any_sweep_data(self) -> bool:
+        return any(self._sweep_results[a] for a in self._sweep_results)
+
     def _do_save(self):
-        if self._last_adc is None and not self._sweep_results:
+        if self._last_adc is None and not self._any_sweep_data():
             messagebox.showinfo("Sauvegarder",
                                 "Aucune donnee a sauvegarder.")
             return
@@ -1112,26 +2172,44 @@ class Application(tk.Tk):
 
         self._set_status(f"Sauvegarde : {os.path.basename(path)}")
 
+    # Colonnes du sweep de calibration (schéma TestBench.calibration_sweep)
+    _SWEEP_COLUMNS = [
+        "freq_hz", "target_g", "measured_g", "vpp", "stiffness",
+        "displacement_mm", "peak_velocity_mps", "safety_margin_mm",
+        "snr_db", "thd_percent",
+        "geophone_counts_peak", "sensitivity_counts_per_g",
+        "skipped", "note",
+    ]
+
     def _save_csv(self, path):
         rate = self._last_rate
-        if self._sweep_results:
-            # Sauvegarde du balayage en CSV
+        geophone = self._vars["cal_geophone"].get()
+        if self._any_sweep_data():
+            # Calibration géophone en CSV — une table, axe + knobs par ligne
+            cols = (["axis", "aps125_gain", "aps125_current_limit"]
+                    + self._SWEEP_COLUMNS)
             with open(path, "w", encoding="utf-8") as f:
-                f.write("freq_hz,adc_peak")
-                has_accel = any(v["accel"] is not None
-                                for v in self._sweep_results.values())
-                if has_accel:
-                    f.write(",accel_peak_v")
-                f.write("\n")
-                for freq in sorted(self._sweep_results.keys()):
-                    d = self._sweep_results[freq]
-                    peak = max(abs(v) for v in d["adc"])
-                    f.write(f"{freq},{peak}")
-                    if has_accel and d["accel"] is not None:
-                        f.write(f",{float(np.max(np.abs(d['accel']))):.6f}")
-                    elif has_accel:
-                        f.write(",")
-                    f.write("\n")
+                f.write(f"# geophone: {geophone}\n")
+                f.write(f"# date: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+                f.write(f"# aps125_gain_vertical: {self._aps125_gain_for('vertical')}\n")
+                f.write(f"# aps125_gain_horizontal: {self._aps125_gain_for('horizontal')}\n")
+                f.write(f"# aps125_current_limit_vertical: {self._aps125_climit_for('vertical')}\n")
+                f.write(f"# aps125_current_limit_horizontal: {self._aps125_climit_for('horizontal')}\n")
+                f.write(f"# noise_floor_vertical_g_rms: {self._noise_floor_g['vertical']}\n")
+                f.write(f"# noise_floor_horizontal_g_rms: {self._noise_floor_g['horizontal']}\n")
+                f.write(",".join(cols) + "\n")
+                for ax_name in ("vertical", "horizontal"):
+                    results = self._sweep_results[ax_name]
+                    for freq in sorted(results.keys()):
+                        d = results[freq]
+                        row = []
+                        for col in cols:
+                            val = d.get(col, "")
+                            if isinstance(val, float):
+                                row.append(f"{val:.6g}")
+                            else:
+                                row.append(str(val).replace(",", ";"))
+                        f.write(",".join(row) + "\n")
         elif self._last_adc is not None:
             with open(path, "w", encoding="utf-8") as f:
                 f.write("index,time_s,value\n")
@@ -1139,20 +2217,330 @@ class Application(tk.Tk):
                     f.write(f"{i},{i/rate:.9f},{val}\n")
 
     def _save_npz(self, path):
-        save_dict = {}
+        save_dict = {
+            "geophone": np.array(self._vars["cal_geophone"].get()),
+            "aps125_gain_vertical": np.array(self._aps125_gain_for("vertical")),
+            "aps125_gain_horizontal": np.array(self._aps125_gain_for("horizontal")),
+            "aps125_current_limit_vertical":
+                np.array(self._aps125_climit_for("vertical")),
+            "aps125_current_limit_horizontal":
+                np.array(self._aps125_climit_for("horizontal")),
+            "noise_floor_vertical_g_rms":
+                np.array(self._noise_floor_g["vertical"]
+                         if self._noise_floor_g["vertical"] is not None else np.nan),
+            "noise_floor_horizontal_g_rms":
+                np.array(self._noise_floor_g["horizontal"]
+                         if self._noise_floor_g["horizontal"] is not None else np.nan),
+        }
         if self._last_adc is not None:
             save_dict["adc"] = np.array(self._last_adc, dtype=np.int32)
             save_dict["sample_rate"] = np.array(self._last_rate)
         if self._last_accel is not None:
             save_dict["accel"] = self._last_accel
-        if self._sweep_results:
-            for freq in sorted(self._sweep_results.keys()):
-                d = self._sweep_results[freq]
-                key = f"f{freq:.1f}Hz"
-                save_dict[f"{key}_adc"] = np.array(d["adc"], dtype=np.int32)
-                if d["accel"] is not None:
-                    save_dict[f"{key}_accel"] = d["accel"]
+        # Sweep géophone par axe
+        for ax_name in ("vertical", "horizontal"):
+            results = self._sweep_results[ax_name]
+            if not results:
+                continue
+            fdone = sorted(results.keys())
+            for col in self._SWEEP_COLUMNS:
+                if col == "note":
+                    continue
+                save_dict[f"{ax_name}_sweep_{col}"] = np.array(
+                    [results[fr].get(col, 0) for fr in fdone],
+                    dtype=np.float64 if col != "skipped" else np.bool_)
+        # Transfert banc H_banc par axe (si mesuré)
+        for ax_name in ("vertical", "horizontal"):
+            results = self._bench_results[ax_name]
+            if not results:
+                continue
+            fdone = sorted(results.keys())
+            save_dict[f"{ax_name}_hbench_freq"] = np.array(fdone, dtype=np.float64)
+            save_dict[f"{ax_name}_hbench_g_per_v"] = np.array(
+                [results[fr].get("h_bench_g_per_v", 0) for fr in fdone],
+                dtype=np.float64)
+        # Linéarité par axe (erreur dB par fréquence)
+        for ax_name in ("vertical", "horizontal"):
+            entries = self._linearity_results[ax_name]
+            if not entries:
+                continue
+            save_dict[f"{ax_name}_linearity_freq"] = np.array(
+                [e["freq_hz"] for e in entries], dtype=np.float64)
+            save_dict[f"{ax_name}_linearity_error_db"] = np.array(
+                [e["linearity_error_db"] for e in entries], dtype=np.float64)
+        # Sensibilité transversale (cross-axis)
+        if self._cross_results:
+            cf = sorted(self._cross_results.keys())
+            save_dict["cross_axis_freq"] = np.array(cf, dtype=np.float64)
+            save_dict["cross_axis_pct"] = np.array(
+                [self._cross_results[f]["cross_axis_pct"] for f in cf],
+                dtype=np.float64)
         np.savez(path, **save_dict)
+
+    # ===================================================================
+    # Sauvegarde automatique (un fichier horodate par execution, par cas)
+    # ===================================================================
+
+    def _meta_header(self, axis=None) -> list:
+        """Lignes de commentaire (metadonnees) communes a tous les CSV auto."""
+        lines = [
+            f"date: {datetime.now():%Y-%m-%d %H:%M:%S}",
+            f"geophone: {self._vars['cal_geophone'].get()}",
+        ]
+        if axis:
+            lines.append(f"axis: {axis}")
+        lines += [
+            f"aps125_gain_vertical: {self._aps125_gain_for('vertical')}",
+            f"aps125_gain_horizontal: {self._aps125_gain_for('horizontal')}",
+            f"aps125_current_limit_vertical: {self._aps125_climit_for('vertical')}",
+            f"aps125_current_limit_horizontal: {self._aps125_climit_for('horizontal')}",
+            f"noise_floor_vertical_g_rms: {self._noise_floor_g['vertical']}",
+            f"noise_floor_horizontal_g_rms: {self._noise_floor_g['horizontal']}",
+        ]
+        return lines
+
+    def _meta_npz(self) -> dict:
+        """Metadonnees scalaires communes a tous les NPZ auto."""
+        nf = self._noise_floor_g
+        return {
+            "geophone_model": np.array(self._vars["cal_geophone"].get()),
+            "date": np.array(f"{datetime.now():%Y-%m-%d %H:%M:%S}"),
+            "aps125_gain_vertical": np.array(self._aps125_gain_for("vertical")),
+            "aps125_gain_horizontal": np.array(self._aps125_gain_for("horizontal")),
+            "aps125_current_limit_vertical":
+                np.array(self._aps125_climit_for("vertical")),
+            "aps125_current_limit_horizontal":
+                np.array(self._aps125_climit_for("horizontal")),
+            "noise_floor_vertical_g_rms":
+                np.array(nf["vertical"] if nf["vertical"] is not None else np.nan),
+            "noise_floor_horizontal_g_rms":
+                np.array(nf["horizontal"] if nf["horizontal"] is not None else np.nan),
+        }
+
+    def _announce_saved(self, case: str, csv_path: str) -> str:
+        """Trace la sauvegarde dans le journal ; retourne le chemin CSV.
+
+        N'ecrase pas la barre de statut : l'appelant ajoute le nom de fichier
+        a son propre message de verdict (pass/fail)."""
+        self._glog.info(f"Sauvegarde auto {case}: {csv_path}")
+        return csv_path
+
+    def _autosave_acquisition(self):
+        """Acquisition unitaire : forme d'onde geophone (CSV) + tout (NPZ)."""
+        if self._last_adc is None:
+            return
+        geophone = self._vars["cal_geophone"].get()
+        rate = self._last_rate
+        ts = datastore.timestamp()
+        csv_path = datastore.build_path("acquisition", "csv",
+                                        geophone=geophone, ts=ts)
+        rows = ((i, i / rate, v) for i, v in enumerate(self._last_adc))
+        datastore.write_csv(csv_path, ["index", "time_s", "geophone_count"],
+                            rows, header_comments=self._meta_header())
+        save = self._meta_npz()
+        save["geophone_wave"] = np.array(self._last_adc, dtype=np.int64)
+        save["geophone_rate"] = np.array(rate)
+        if self._last_accel is not None:
+            save["accel_wave"] = np.asarray(self._last_accel)
+            save["accel_rate"] = np.array(NI_SAMPLE_RATE)
+        np.savez(datastore.build_path("acquisition", "npz",
+                                      geophone=geophone, ts=ts), **save)
+        return self._announce_saved("acquisition", csv_path)
+
+    def _autosave_noise(self, axis: str, floor_g: float, signal, fs, duration):
+        """Plancher de bruit : forme d'onde (CSV) + valeur RMS + métadonnées (NPZ).
+
+        Caractérise le banc (accéléro seul) → pas de géophone dans le nom."""
+        ts = datastore.timestamp()
+        header = self._meta_header(axis) + [
+            f"plancher_g_rms: {floor_g:.6g}",
+            f"duree_s: {duration:.3g}",
+            f"fs_hz: {fs}",
+        ]
+        csv_path = datastore.build_path("plancher_bruit", "csv", axis=axis, ts=ts)
+        rows = ((i, i / fs, float(v)) for i, v in enumerate(signal))
+        datastore.write_csv(csv_path, ["index", "time_s", "accel_v"], rows,
+                            header_comments=header)
+        save = self._meta_npz()
+        save["axis"] = np.array(axis)
+        save["plancher_g_rms"] = np.array(floor_g)
+        save["accel_wave"] = np.asarray(signal)
+        save["accel_fs"] = np.array(fs)
+        save["duration_s"] = np.array(duration)
+        np.savez(datastore.build_path("plancher_bruit", "npz", axis=axis, ts=ts),
+                 **save)
+        return self._announce_saved("plancher_bruit", csv_path)
+
+    def _sweep_save_begin(self, axis: str):
+        """Ouvre la sauvegarde incrémentale du balayage : crée le CSV de table et
+        écrit son en-tête. Une ligne sera ajoutée par point (_sweep_save_point) ;
+        les formes d'onde vont dans un fichier séparé par point."""
+        geophone = self._vars["cal_geophone"].get()
+        ts = datastore.timestamp()
+        cols = (["axis", "aps125_gain", "aps125_current_limit"]
+                + self._SWEEP_COLUMNS + ["sensitivity_counts_per_mps"])
+        csv_path = datastore.build_path("balayage", "csv", geophone=geophone,
+                                        axis=axis, ts=ts)
+        with open(csv_path, "w", encoding="utf-8") as f:
+            for line in self._meta_header(axis):
+                f.write(f"# {line}\n")
+            f.write(",".join(cols) + "\n")
+        self._sweep_save[axis] = {"ts": ts, "geophone": geophone,
+                                  "csv": csv_path, "cols": cols}
+        self._glog.info(f"Balayage {axis} : sauvegarde incrémentale → {csv_path}")
+
+    def _sweep_save_point(self, axis: str, freq: float, res: dict):
+        """Ajoute la ligne du point au CSV, et écrit ses formes d'onde brutes
+        (données temporelles) dans un fichier séparé
+        `onde_<geophone>_<axe>_<freq>Hz_<ts>.npz`."""
+        ctx = self._sweep_save.get(axis)
+        if not ctx:
+            return
+        cols = ctx["cols"]
+        sg = res.get("sensitivity_counts_per_g")
+        sv = (float(dsp.velocity_sensitivity(np.array([sg]), np.array([freq]))[0])
+              if sg else "")
+        row = [res.get(c, "") for c in cols[:-1]] + [sv]
+        with open(ctx["csv"], "a", encoding="utf-8") as f:
+            f.write(",".join(datastore._fmt(v) for v in row) + "\n")
+        if "geo_wave" in res or "accel_wave" in res:
+            save = self._meta_npz()
+            save["axis"] = np.array(axis)
+            save["freq_hz"] = np.array(float(freq))
+            for k in ("measured_g", "sensitivity_counts_per_g",
+                      "geophone_counts_peak", "snr_db", "thd_percent"):
+                if k in res:
+                    save[k] = np.array(res[k])
+            if "geo_wave" in res:
+                save["geo_wave"] = np.asarray(res["geo_wave"])
+                save["geo_rate"] = np.array(res.get("geo_rate", 0))
+            if "accel_wave" in res:
+                save["accel_wave"] = np.asarray(res["accel_wave"])
+                save["accel_fs"] = np.array(res.get("accel_fs", 0))
+            np.savez(datastore.build_path("onde", "npz", geophone=ctx["geophone"],
+                                          axis=axis, freq=freq, ts=ctx["ts"]), **save)
+
+    def _sweep_save_end(self, axis: str):
+        """Finalise le balayage : ajustement (G0,f0,ζ) ajouté en fin de CSV, et
+        NPZ résumé (sans formes d'onde — celles-ci sont dans les fichiers onde_*)
+        pour l'onglet Comparaison. Retourne le chemin CSV."""
+        ctx = self._sweep_save.pop(axis, None)
+        if not ctx:
+            return None
+        results = self._sweep_results.get(axis, {})
+        freqs = sorted(results.keys())
+        fit = self._fit_axis(axis)
+        self._sweep_fit[axis] = fit
+        if fit:
+            with open(ctx["csv"], "a", encoding="utf-8") as f:
+                f.write(f"# fit_G0_counts_per_mps: {fit['G0']:.6g}\n")
+                f.write(f"# fit_f0_hz: {fit['f0']:.4g}\n")
+                f.write(f"# fit_zeta: {fit['zeta']:.4g}\n")
+                f.write(f"# fit_rms_error_db: {fit['rms_error_db']:.3g}\n")
+        sg_all = np.array([results[fr].get("sensitivity_counts_per_g", 0.0)
+                           for fr in freqs], dtype=float)
+        sv_all = (dsp.velocity_sensitivity(sg_all, np.array(freqs, dtype=float))
+                  if len(freqs) else np.array([]))
+        save = self._meta_npz()
+        save["axis"] = np.array(axis)
+        save["freq_hz"] = np.array(freqs, dtype=np.float64)
+        save["summary_sensitivity_counts_per_mps"] = sv_all
+        for col in self._SWEEP_COLUMNS:
+            if col == "note":
+                continue
+            save[f"summary_{col}"] = np.array(
+                [results[fr].get(col, 0) for fr in freqs],
+                dtype=np.bool_ if col == "skipped" else np.float64)
+        if fit:
+            save["fit_G0_counts_per_mps"] = np.array(fit["G0"])
+            save["fit_f0_hz"] = np.array(fit["f0"])
+            save["fit_zeta"] = np.array(fit["zeta"])
+            save["fit_rms_error_db"] = np.array(fit["rms_error_db"])
+            if fit["G0"] > 0:
+                save["summary_sensitivity_normalized"] = sv_all / fit["G0"]
+        np.savez(os.path.splitext(ctx["csv"])[0] + ".npz", **save)
+        return self._announce_saved("balayage", ctx["csv"])
+
+    def _autosave_bench(self, axis: str):
+        """Transfert banc H_banc(f) : table (CSV, accel seul, sans geophone)."""
+        results = self._bench_results.get(axis, {})
+        if not results:
+            return
+        ts = datastore.timestamp()
+        freqs = sorted(results.keys())
+        cols = ["axis", "freq_hz", "target_g", "vpp", "measured_g",
+                "h_bench_g_per_v", "snr_db", "thd_percent", "stiffness",
+                "displacement_mm", "safety_margin_mm", "skipped", "note"]
+        rows = [[results[fr].get(c, "") for c in cols] for fr in freqs]
+        csv_path = datastore.build_path("transfert_banc", "csv", axis=axis, ts=ts)
+        datastore.write_csv(csv_path, cols, rows,
+                            header_comments=self._meta_header(axis))
+        return self._announce_saved("transfert_banc", csv_path)
+
+    def _autosave_linearity(self, axis: str):
+        """Linearite : table aplatie par (freq, niveau) (CSV) + formes d'onde (NPZ)."""
+        entries = self._linearity_results.get(axis, [])
+        if not entries:
+            return
+        geophone = self._vars["cal_geophone"].get()
+        ts = datastore.timestamp()
+        cols = ["axis", "freq_hz", "level", "target_g", "measured_g",
+                "sensitivity_counts_per_g", "linearity_error_db", "pass",
+                "skipped", "note"]
+        rows = []
+        for e in entries:
+            for p in e["levels"]:
+                rows.append([axis, e["freq_hz"], p.get("level", ""),
+                             p.get("target_g", ""), p.get("measured_g", ""),
+                             p.get("sensitivity_counts_per_g", ""),
+                             e["linearity_error_db"], e["pass"],
+                             p.get("skipped", ""), p.get("note", "")])
+        csv_path = datastore.build_path("linearite", "csv", geophone=geophone,
+                                        axis=axis, ts=ts)
+        datastore.write_csv(csv_path, cols, rows,
+                            header_comments=self._meta_header(axis))
+        save = self._meta_npz()
+        save["axis"] = np.array(axis)
+        for e in entries:
+            for p in e["levels"]:
+                tag = f"{e['freq_hz']:g}Hz_lvl{p.get('level', 0):g}"
+                if "geo_wave" in p:
+                    save[f"geo_wave_{tag}"] = np.asarray(p["geo_wave"])
+                if "accel_wave" in p:
+                    save[f"accel_wave_{tag}"] = np.asarray(p["accel_wave"])
+        np.savez(datastore.build_path("linearite", "npz", geophone=geophone,
+                                      axis=axis, ts=ts), **save)
+        return self._announce_saved("linearite", csv_path)
+
+    def _autosave_daily(self, axis: str):
+        """Verification quotidienne : table ecart vs reference (CSV)."""
+        if not self._daily_results:
+            return
+        ts = datastore.timestamp()
+        cols = ["axis", "freq_hz", "h_bench_g_per_v", "h_bench_ref",
+                "deviation_db", "pass", "skipped", "note"]
+        rows = [[axis] + [r.get(c, "") for c in cols[1:]]
+                for r in self._daily_results]
+        csv_path = datastore.build_path("verif_quotidienne", "csv",
+                                        axis=axis, ts=ts)
+        datastore.write_csv(csv_path, cols, rows,
+                            header_comments=self._meta_header(axis))
+        return self._announce_saved("verif_quotidienne", csv_path)
+
+    def _autosave_cross(self):
+        """Sensibilite transversale : table % par frequence (CSV)."""
+        if not self._cross_results:
+            return
+        geophone = self._vars["cal_geophone"].get()
+        ts = datastore.timestamp()
+        freqs = sorted(self._cross_results.keys())
+        cols = ["freq_hz", "s_main", "s_trans", "cross_axis_pct", "pass"]
+        rows = [[self._cross_results[f].get(c, "") for c in cols] for f in freqs]
+        csv_path = datastore.build_path("transversale", "csv",
+                                        geophone=geophone, ts=ts)
+        datastore.write_csv(csv_path, cols, rows,
+                            header_comments=self._meta_header())
+        return self._announce_saved("transversale", csv_path)
 
     # ===================================================================
     # Fermeture
@@ -1163,6 +2551,8 @@ class Application(tk.Tk):
         # Synchronise les champs APS de l'axe actif vers les dicts
         axis = self._vars["aps_axis"].get()
         self._aps_ctrl_ports[axis] = self._vars["aps_ctrl_port"].get()
+        self._aps125_gains[axis]   = self._vars["aps125_gain"].get()
+        self._aps125_climits[axis] = self._vars["aps125_climit"].get()
 
         sv = _cfg_mgr.set_value
         sv("ADS1285", "bridge_port",  self._vars["ads_port"].get())
@@ -1171,10 +2561,17 @@ class Application(tk.Tk):
         sv("Wavetek",  "port",         self._vars["wav_port"].get())
         sv("APS", "controller_vertical_port",   self._aps_ctrl_ports["vertical"])
         sv("APS", "controller_horizontal_port", self._aps_ctrl_ports["horizontal"])
+        sv("APS", "amplifier_gain_vertical",    self._aps125_gains["vertical"])
+        sv("APS", "amplifier_gain_horizontal",  self._aps125_gains["horizontal"])
+        sv("APS", "amplifier_current_limit_vertical",   self._aps125_climits["vertical"])
+        sv("APS", "amplifier_current_limit_horizontal", self._aps125_climits["horizontal"])
         sv("NI",  "device_name",         self._vars["accel_dev"].get())
         sv("NI",  "ai_channels",         self._vars["accel_ch"].get())
         sv("NI",  "sample_rate",         self._vars["accel_rate"].get())
         sv("NI",  "samples_per_channel", self._vars["accel_spc"].get())
+        sv("Shaker", "envelope_fraction", self._vars["cal_fraction"].get())
+        sv("Shaker", "accel_cap_g",       self._vars["cal_cap"].get())
+        sv("Shaker", "geophone",          self._vars["cal_geophone"].get())
         _cfg_mgr.save()
 
     def _on_close(self):
