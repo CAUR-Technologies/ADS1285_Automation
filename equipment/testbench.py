@@ -95,6 +95,7 @@ class TestBench:
         self._acq_retries = 1        # retentatives d'acquisition géophone sur échec
         self._stop = None            # threading.Event optionnel
         self._aps_started = False    # le contrôleur APS a-t-il reçu STA ?
+        self._current_stf = None     # stiffness réellement appliquée (au démarrage)
         # Journalisation : fichier unifié + callback statut (GUI)
         self._flog = get_logger("TestBench")
         self._status_cb = print
@@ -176,6 +177,7 @@ class TestBench:
         self._aps.set_zero_position(0)
         self._aps.start()
         self._aps_started = True
+        self._current_stf = None     # forcera la ré-application de la stiffness
         time.sleep(settle_s)
 
         pmax = self._aps.get_position_max()
@@ -206,25 +208,49 @@ class TestBench:
     # Réglage d'un point de fréquence (stiffness + servo amplitude)
     # ──────────────────────────────────────────────────────────────────
 
-    def _ensure_started(self) -> None:
-        """Démarre le contrôleur APS (STA) une fois — sinon l'AC est coupé et
-        le shaker ne bouge pas. Le démarrage centre l'armature sur la consigne ZER."""
-        if not self._aps_started:
-            self._aps.start()
-            self._aps_started = True
-            self._log(f"[banc] contrôleur APS démarré (STA)")
+    def _ensure_stiffness(self, freq_hz: float) -> int:
+        """Démarre le contrôleur à la stiffness adaptée à freq_hz, en GARANTISSANT
+        qu'elle est réellement appliquée.
 
-    def _apply_stiffness(self, freq_hz: float) -> int:
-        """Applique la stiffness recommandée et attend la stabilisation (WTR)."""
+        L'APS 0109 fige la rigidité au DÉMARRAGE (d'où la « stiffness start value »
+        SSS) : la changer pendant qu'il tourne reste sans effet. On règle donc STF
+        *avant* STA, et si la valeur doit changer en cours de balayage on redémarre
+        (STP → STF → STA). On relit STF? pour confirmer la valeur appliquée.
+
+        (Le démarrage centre aussi l'armature sur la consigne ZER ; sans STA l'AC
+        est coupée et le shaker ne bouge pas.)
+        """
         stf = sp.stiffness_for_freq(freq_hz)
-        self._aps.set_stiffness(stf)
+
+        if self._aps_started and stf == self._current_stf:
+            return stf   # déjà démarré à la bonne rigidité — rien à faire
+
+        if self._aps_started:
+            # Changement de stiffness : il faut redémarrer pour qu'elle soit prise.
+            self._aps.stop()
+            self._aps_started = False
+
+        self._aps.set_stiffness(stf)      # STF AVANT STA
+        self._aps.start()                 # STA : applique la rigidité réglée
+        self._aps_started = True
+        self._current_stf = stf
+
+        # Vérification : relire la rigidité réellement appliquée
+        try:
+            applied = self._aps.get_stiffness()
+            if applied != stf:
+                self._log(f"[banc] ⚠ STF demandé={stf} mais lu={applied}")
+        except Exception:
+            applied = stf
+
         # Temps de stabilisation : WTR réel = val×10 + 3500 ms
         try:
             wtr = self._aps.get_wait_time_ramping()
             self._settle_s = (wtr * 10 + 3500) / 1000.0
         except Exception:
             self._settle_s = 4.0
-        self._log(f"[banc] {freq_hz} Hz : STF={stf}, stabilisation {self._settle_s:.1f}s")
+        self._log(f"[banc] {freq_hz} Hz : STF={stf} (lu {applied}), "
+                  f"stabilisation {self._settle_s:.1f}s")
         time.sleep(self._settle_s)
         return stf
 
@@ -314,8 +340,9 @@ class TestBench:
             return result
 
         self._check_stop()
-        self._ensure_started()          # contrôleur en marche (sinon AC coupé)
-        self._apply_stiffness(freq_hz)
+        # Stiffness appliquée AVANT le démarrage (STF→STA) ; redémarre si elle
+        # change. Démarre aussi le contrôleur (sinon l'AC est coupée).
+        self._ensure_stiffness(freq_hz)
         self._wav.set_frequency(freq_hz)
         self._wav.enable_output()
         vpp, measured = self._servo_amplitude(freq_hz, target_g)
