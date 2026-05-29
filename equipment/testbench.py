@@ -87,6 +87,7 @@ class TestBench:
         self._servo_tol = servo_tolerance
         self._servo_max_iter = servo_max_iter
         self._servo_start_vpp = servo_start_vpp
+        self._servo_max_step = 3.0   # montée Vpp max par itération (anti-claquage)
         self._vpp_max = vpp_max
         self._v_max = geophone_max_velocity_mps   # vitesse crête max géophone (m/s)
 
@@ -284,7 +285,11 @@ class TestBench:
                       f"(cible {target_g:.5f}, err {err*100:+.1f}%)")
             if abs(err) <= self._servo_tol:
                 return applied, measured
-            vpp = applied * (target_g / measured)
+            # Montée limitée par itération : ne jamais claquer le Vpp à fond d'un
+            # coup (ex. 0,1 V → 10 V) sous peine de projeter l'armature en butée
+            # et de faire disjoncter l'ampli. Les baisses (ratio<1) restent libres.
+            ratio = min(target_g / measured, self._servo_max_step)
+            vpp = applied * ratio
             # Saturation : déjà au plafond Vpp et la cible exige davantage —
             # inutile de boucler, le gain APS 125 est le facteur limitant.
             if vpp > self._vpp_max and applied >= self._vpp_max - 1e-9:
