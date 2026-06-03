@@ -1,12 +1,15 @@
 """
 Diagnostic / recuperation des controleurs APS 0109 (Vertical / Horizontal).
 
-- Lit et COMPARE toute la config des deux axes (read-only par defaut).
+- Lit et COMPARE toute la config RS232-accessible des deux axes (read-only par
+  defaut), GES inclus (memoire de la derniere erreur).
 - Option de recuperation : RST d'un axe (remise aux defauts) puis restauration
   guidee des limites (PMA/PMI/OTT/ZER/SSS) + re-test de l'ecriture STF.
 
-Sert notamment quand un controleur refuse une commande (ex. STF bloque a 31) :
-on voit en quoi l'axe fautif differe de l'axe sain, et on tente un RST cible.
+Sert notamment quand un controleur refuse une commande (ex. STF bloque a 31)
+ou ne sort plus de signal vers l'ampli : on voit en quoi l'axe fautif differe
+de l'axe sain, on lit GES pour identifier la cause (overtravel, CRC, ...) et
+on tente un RST cible.
 
 Usage :
     python tools/aps_compare.py                  # lit et compare V vs H
@@ -16,6 +19,16 @@ Usage :
 Le RST est fait controleur ARRETE (STP) et ne RElance PAS le controleur :
 reconfigure/redemarre ensuite depuis le GUI (et reprogramme les limites avant
 tout signal AC).
+
+Ce que cet outil NE couvre PAS — limitation materielle, pas logicielle :
+le chapitre 6 du manuel APS 0109 ne documente que 24 commandes RS232. Les
+13 menus de configuration (couples Overtravel limit Menus 2-7, Menu 8 TimeOut,
+Menu 9 monitoring capteur, Menu 10 horizontal shaker, Menus 11-13 input/output
+sockets, ...) sont accessibles UNIQUEMENT par le panneau frontal. Pour les
+comparer entre V et H, les relever a la main sur chaque unite.
+
+Note GES : per doc §6.11, la lecture de GES *vide* la memoire d'erreur. On la
+lit donc en premier pour ne pas la masquer accidentellement.
 """
 
 import argparse
@@ -28,7 +41,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from equipment.aps import APSController  # noqa: E402
 
 # (cle, libelle, methode getter) — ordre d'affichage
+# GES en PREMIER : sa lecture vide la memoire d'erreur cote controleur.
 READOUTS = [
+    ("ges", "GES  derniere_err",   "get_last_error"),
     ("fwv", "FWV  firmware",        "get_firmware_version"),
     ("ser", "SER  n_serie",         "get_serial_number"),
     ("sta", "STA  demarre",         "get_start_status"),
@@ -90,8 +105,8 @@ def cmd_compare() -> int:
             print(f"[{axis}] connexion impossible : {e}")
             cfgs[axis] = None
 
-    print(f"\n{'Parametre':20} | {'Vertical':16} | {'Horizontal':16} | diff")
-    print("-" * 64)
+    print(f"\n{'Parametre':20} | {'Vertical':20} | {'Horizontal':20} | diff")
+    print("-" * 72)
     ndiff = 0
     for key, label, _ in READOUTS:
         v = cfgs["vertical"][key] if cfgs.get("vertical") else "(absent)"
@@ -100,10 +115,18 @@ def cmd_compare() -> int:
         if str(v) != str(h):
             mark = "<<<"
             ndiff += 1
-        print(f"{label:20} | {_fmt(v):16} | {_fmt(h):16} | {mark}")
-    print("-" * 64)
+        print(f"{label:20} | {_fmt(v):20} | {_fmt(h):20} | {mark}")
+    print("-" * 72)
     print(f"{ndiff} difference(s). Un STF/SSS qui diverge (ex. 31 vs 3) ou un "
           f"SRV different pointe l'unite/le mode fautif.")
+    print(
+        "\nGES : 'no_error' = OK ; Overtravel_TOP/Bottom = la protection s'est "
+        "declenchee (limites depassees) — l'output reste coupee tant que le "
+        "controleur n'a pas etait redemarre proprement.\n"
+        "Rappel : les 13 menus du panneau frontal (couples Overtravel limit, "
+        "Menu 8 TimeOut, Menu 9 monitoring, Menus 11-13 sockets, ...) ne sont "
+        "PAS accessibles par RS232 — les comparer a la main sur les unites."
+    )
     return 0
 
 
