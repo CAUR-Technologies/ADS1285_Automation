@@ -15,17 +15,38 @@ Système automatisé de caractérisation de la réponse en fréquence de géopho
 | Géophone testé (DUT) | sélectionnable (HG-5VHS, HG-6, VAS-200, ST-2A…) | **ADS1285 EVM** |
 
 ### Chaîne du signal
+**Câblage parallèle**, pas série : le Wavetek est splitté et va **directement**
+aux deux appareils (Signal IN du 0109 ET Signal IN du 125). Le Signal Out (BNC)
+du 0109 **n'est pas utilisé**. Le 0109 sert de **moniteur de position** (zéro,
+overtravel, pression) et peut **muter l'ampli via l'interface SPC 24 V**
+(connecteur multi-broches arrière) sans toucher au signal AC.
+
 ```
-                 ┌─► [APS 0109 V] ─► APS 125 V ─► Shaker V ─► accéléro réf. V (NI ai0)
-Wavetek ─►splitter┤
-                 └─► [APS 0109 H] ─► APS 125 H ─► Shaker H ─► accéléro réf. H (NI ai1)
+                 ┌─► APS 0109 V (Signal IN — position monitor)  ──┐
+                 │                                                 │ SPC 24 V
+                 │                                                 │ (interlock)
+                 ├─► APS 125 V (Signal IN — ampli) ◄───────────────┘
+Wavetek ─►splitter┤                          └─► Shaker V ─► accéléro réf. V (NI ai0)
+                 │
+                 ├─► APS 0109 H (Signal IN — position monitor)  ──┐
+                 │                                                 │ SPC 24 V
+                 │                                                 │ (interlock)
+                 └─► APS 125 H (Signal IN — ampli) ◄───────────────┘
+                                              └─► Shaker H ─► accéléro réf. H (NI ai1)
                                                               géophone (DUT) ─► ADS1285 EVM
 ```
-- **2 chaînes indépendantes** (V/H), chacune : contrôleur APS 0109 + ampli
-  APS 125 + shaker APS 113 + accéléromètre de référence (canal NI dédié).
+
+- **2 chaînes indépendantes** (V/H), chacune : contrôleur APS 0109 (position +
+  interlock seulement) + ampli APS 125 + shaker APS 113 + accéléromètre de
+  référence (canal NI dédié).
 - Le **splitter** alimente les deux chaînes avec **une amplitude commune** (le
   Wavetek) ; chaque axe est dosé par le gain de son APS 125. Le servo d'amplitude
   ne pilote qu'**un axe à la fois** (l'accéléromètre de référence de cet axe).
+- L'**interface SPC** (cf. doc APS 0109 §5.1) relie chaque 0109 à son ampli :
+  outputs côté 0109 = `zero reached / Overtravel / No air / Stop` ; inputs côté
+  ampli = `amplifier reset / amplifier interlock`. Si le 0109 trip une protection
+  (Overtravel notamment), il **mute l'ampli** électriquement → ampli affiche 0 V/0 A
+  même si le Wavetek envoie un signal.
 - Pas de re-routage manuel : le logiciel bascule d'axe via le canal NI + le
   contrôleur APS correspondants.
 
