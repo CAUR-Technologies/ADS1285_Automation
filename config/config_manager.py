@@ -53,6 +53,16 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "amplifier_gain_horizontal":        "",
         "amplifier_current_limit_vertical":   "",
         "amplifier_current_limit_horizontal": "",
+        # Tolerance overtravel (OTT, 0..1023) appliquee au demarrage de chaque
+        # controleur. OTT=0 = trip au moindre ecart de position : sur l'axe
+        # VERTICAL l'armature flue sous la gravite jusqu'a un petit creux
+        # d'equilibre, donc OTT=0 trippe avant que le controleur ait developpe
+        # sa force de maintien. OTT=50 (~4x le creux a vide) tient le droop tout
+        # en restant loin de la butee +/-38 mm. L'axe HORIZONTAL ne droope pas
+        # (pas de gravite sur son axe) -> OTT=0 suffit. Re-applique a chaque
+        # connect car un power-cycle / RST usine du 0109 le remet a 0.
+        "overtravel_tolerance_vertical":   "50",
+        "overtravel_tolerance_horizontal": "0",
     },
     "Wavetek": {
         "port":    "COM5",

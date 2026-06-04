@@ -28,6 +28,13 @@ APS125_GAIN_HORIZONTAL         = get("APS", "amplifier_gain_horizontal")
 APS125_CURRENT_LIMIT_VERTICAL   = get("APS", "amplifier_current_limit_vertical")
 APS125_CURRENT_LIMIT_HORIZONTAL = get("APS", "amplifier_current_limit_horizontal")
 
+# Tolerance overtravel (OTT) appliquee au demarrage de chaque controleur 0109.
+# Voir config_manager pour le pourquoi (OTT=0 trippe le V sur le droop gravite).
+APS_OVERTRAVEL_TOLERANCE = {
+    "vertical":   int(get("APS", "overtravel_tolerance_vertical")),
+    "horizontal": int(get("APS", "overtravel_tolerance_horizontal")),
+}
+
 # --- Wavetek Model 39A ---
 WAVETEK_PORT    = get("Wavetek", "port")
 WAVETEK_BAUD    = int(get("Wavetek", "baud"))
