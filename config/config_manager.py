@@ -63,6 +63,17 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         # connect car un power-cycle / RST usine du 0109 le remet a 0.
         "overtravel_tolerance_vertical":   "50",
         "overtravel_tolerance_horizontal": "0",
+        # Démarrage hands-free de l'axe vertical via OTT TRANSITOIRE : au STA
+        # souple l'armature plonge sous la gravité avant que le contrôleur ne
+        # développe sa force ; la plongée dépasse l'OTT opérationnel et arme un
+        # trip. On élargit donc l'OTT le temps que le contrôleur ramène l'armature
+        # à zéro (start_settle_s), puis on resserre à overtravel_tolerance_*.
+        # 0 = pas de séquence transitoire (STA simple) : cas de l'horizontal, qui
+        # ne plonge pas. Évite de tenir l'armature à la main et tout SSS élevé
+        # (donc aucun risque de slam en butée).
+        "overtravel_tolerance_start_vertical":   "500",
+        "overtravel_tolerance_start_horizontal": "0",
+        "overtravel_start_settle_s":             "6.0",
     },
     "Wavetek": {
         "port":    "COM5",

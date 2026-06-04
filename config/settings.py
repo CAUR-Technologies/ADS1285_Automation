@@ -35,6 +35,15 @@ APS_OVERTRAVEL_TOLERANCE = {
     "horizontal": int(get("APS", "overtravel_tolerance_horizontal")),
 }
 
+# OTT TRANSITOIRE de demarrage (large) par axe ; 0 = STA simple (horizontal).
+# Permet un STA vertical hands-free : large pendant la plongee gravite, puis
+# resserrage a APS_OVERTRAVEL_TOLERANCE apres start_settle_s.
+APS_OVERTRAVEL_START = {
+    "vertical":   int(get("APS", "overtravel_tolerance_start_vertical")),
+    "horizontal": int(get("APS", "overtravel_tolerance_start_horizontal")),
+}
+APS_OVERTRAVEL_START_SETTLE_S = float(get("APS", "overtravel_start_settle_s"))
+
 # --- Wavetek Model 39A ---
 WAVETEK_PORT    = get("Wavetek", "port")
 WAVETEK_BAUD    = int(get("Wavetek", "baud"))
