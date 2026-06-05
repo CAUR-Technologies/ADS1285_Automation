@@ -458,8 +458,13 @@ class TestBench:
 
             th = threading.Thread(target=_acq_accel, daemon=True)
             th.start()
-            geo = self._ads.acquire(eff_count, geophone_rate) if self._ads else None
-            th.join()
+            try:
+                geo = self._ads.acquire(eff_count, geophone_rate) if self._ads else None
+            finally:
+                # TOUJOURS attendre le thread accéléro, même si le géophone lève
+                # (bridge ADS1285 instable) : sinon le thread reste orphelin avec
+                # la tâche NI démarrée -> l'acquisition suivante plante en -200557.
+                th.join()
             if "err" in holder:
                 raise holder["err"]
             return holder["sig"], holder["fs"], geo

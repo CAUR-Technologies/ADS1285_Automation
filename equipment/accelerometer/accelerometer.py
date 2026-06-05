@@ -3,6 +3,8 @@ Module Accéléromètre — NI USB-6221 + interface Spektra
 Acquisition via nidaqmx.
 """
 
+import threading
+
 import numpy as np
 import nidaqmx
 from nidaqmx.constants import AcquisitionType, TerminalConfiguration
@@ -40,6 +42,9 @@ class Accelerometer:
         self._sensitivity = sensitivity_v_per_g
         self._ref_channel = ref_channel
         self._task: nidaqmx.Task | None = None
+        # Sérialise l'accès à la tâche NI : interdit toute reconfiguration de
+        # timing concurrente (deux acquisitions en parallèle -> DAQmx -200557).
+        self._lock = threading.Lock()
 
     def connect(self) -> None:
         """Crée et configure la tâche NI-DAQmx."""
@@ -90,25 +95,26 @@ class Accelerometer:
         """
         if not self._task:
             raise RuntimeError("Accéléromètre non connecté.")
-        try:
-            self._task.stop()
-        except Exception:            # noqa: BLE001 — déjà arrêtée : OK
-            pass
-        self._task.timing.cfg_samp_clk_timing(
-            rate=sample_rate,
-            sample_mode=AcquisitionType.FINITE,
-            samps_per_chan=samples,
-        )
-        self._task.start()
-        try:
-            timeout = samples / sample_rate + 5.0
-            data = self._task.read(number_of_samples_per_channel=samples,
-                                   timeout=timeout)
-        finally:
+        with self._lock:             # accès tâche NI sérialisé (anti -200557)
             try:
                 self._task.stop()
-            except Exception:        # noqa: BLE001
+            except Exception:        # noqa: BLE001 — déjà arrêtée : OK
                 pass
+            self._task.timing.cfg_samp_clk_timing(
+                rate=sample_rate,
+                sample_mode=AcquisitionType.FINITE,
+                samps_per_chan=samples,
+            )
+            self._task.start()
+            try:
+                timeout = samples / sample_rate + 5.0
+                data = self._task.read(number_of_samples_per_channel=samples,
+                                       timeout=timeout)
+            finally:
+                try:
+                    self._task.stop()
+                except Exception:    # noqa: BLE001
+                    pass
         return np.array(data)
 
     def _ref_idx(self, ref_channel):
