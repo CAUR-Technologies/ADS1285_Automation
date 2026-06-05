@@ -431,9 +431,11 @@ class TestBench:
         geophone_counts_peak + sensitivity_counts_per_g.
         """
         # Fenêtre adaptative : en BF on l'allonge pour capturer plusieurs cycles
-        # (sinon < 1 cycle sous ~1 Hz -> lock-in bruité). Géophone ET accéléro
-        # acquièrent sur la même fenêtre élargie.
-        eff_count, duration = self._adaptive_acq(freq_hz, geophone_count, geophone_rate)
+        # (sinon < 1 cycle sous ~1 Hz -> lock-in bruité). Seul l'ACCÉLÉRO étend sa
+        # fenêtre (NI le permet) ; le géophone reste à geophone_count (buffer PSM
+        # ADS1285 figé -> count plus grand = crash DLL). Pour allonger la fenêtre
+        # géophone en BF, baisser le taux ADS1285 (250 SPS -> 4× plus de temps).
+        _eff_count, duration = self._adaptive_acq(freq_hz, geophone_count, geophone_rate)
 
         def _acquire_once():
             holder = {}
@@ -459,7 +461,11 @@ class TestBench:
             th = threading.Thread(target=_acq_accel, daemon=True)
             th.start()
             try:
-                geo = self._ads.acquire(eff_count, geophone_rate) if self._ads else None
+                # Le buffer PSM de l'ADS1285 est dimensionné pour geophone_count :
+                # lui demander eff_count (élargi en BF) fait planter le DLL TI
+                # (PHI_RunPSM -> access violation). On garde donc le géophone à son
+                # count de base ; seul l'accéléro étend sa fenêtre (meilleur SNR réf).
+                geo = self._ads.acquire(geophone_count, geophone_rate) if self._ads else None
             finally:
                 # TOUJOURS attendre le thread accéléro, même si le géophone lève
                 # (bridge ADS1285 instable) : sinon le thread reste orphelin avec
