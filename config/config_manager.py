@@ -127,6 +127,10 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         # inatteignable a ce gain APS 125 (sortie anticipee). 10 Vpp = sortie
         # typique max du 39A sur charge ouverte.
         "servo_vpp_max":             "10.0",
+        # Montée Vpp max par itération du servo (anti-claquage). Bas = doux/sûr
+        # (important à gain ampli max sur l'axe V chargé, sinon un pas peut
+        # surdimensionner avant que le plafond accel ne réagisse).
+        "servo_max_step":            "0.5",
         # Modele de geophone candidat en cours de test (metadonnee calibration)
         "geophone":                  "HG-5VHS",
         # Bareme de rigidite (STF) par axe, adapte a la frequence. Format :
@@ -135,6 +139,14 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         # A STF eleve le controleur annule la vibration ; trop bas -> derive.
         "stiffness_vertical":        "10:3, 50:5, *:8",
         "stiffness_horizontal":      "10:3, 50:5, *:8",
+        # Acquisition ADAPTATIVE en fréquence (essentiel en basse fréquence).
+        # La fenêtre d'acquisition (géophone + accéléro) est allongée en BF pour
+        # capturer >= acq_min_cycles cycles -> le lock-in moyenne sur plus de
+        # cycles -> meilleur SNR (sinon < 1 cycle sous 1 Hz). Plafonnée à
+        # acq_max_duration_s pour borner la durée du balayage (ex. 0,1 Hz, 4
+        # cycles = 40 s/point). En haute fréquence la fenêtre de base suffit.
+        "acq_min_cycles":            "4",
+        "acq_max_duration_s":        "60.0",
     },
     "General": {
         "data_output_dir": "data",

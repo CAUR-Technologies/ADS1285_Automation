@@ -35,7 +35,10 @@ from config.settings import (
     SHAKER_SERVO_MAX_ITER,
     SHAKER_SERVO_START_VPP,
     SHAKER_SERVO_VPP_MAX,
+    SHAKER_SERVO_MAX_STEP,
     SHAKER_GEOPHONE_MAX_VELOCITY_MPS,
+    SHAKER_ACQ_MIN_CYCLES,
+    SHAKER_ACQ_MAX_DURATION_S,
 )
 from constants import SNR_MIN_DB
 
@@ -88,7 +91,7 @@ class TestBench:
         self._servo_tol = servo_tolerance
         self._servo_max_iter = servo_max_iter
         self._servo_start_vpp = servo_start_vpp
-        self._servo_max_step = 3.0   # montée Vpp max par itération (anti-claquage)
+        self._servo_max_step = SHAKER_SERVO_MAX_STEP   # montée Vpp max/itération (anti-claquage)
         self._vpp_max = vpp_max
         self._v_max = geophone_max_velocity_mps   # vitesse crête max géophone (m/s)
         self._stiffness_schedule = stiffness_schedule  # barème STF par axe (config)
@@ -96,6 +99,9 @@ class TestBench:
         self._zer_value = 0          # dernière valeur ZER appliquée (-99..99)
         self._settle_s = 4.0         # temps de stabilisation par défaut (s)
         self._acq_retries = 1        # retentatives d'acquisition géophone sur échec
+        # Acquisition adaptative en fréquence (>= N cycles, plafonnée) — BF
+        self._acq_min_cycles = SHAKER_ACQ_MIN_CYCLES
+        self._acq_max_duration_s = SHAKER_ACQ_MAX_DURATION_S
         self._stop = None            # threading.Event optionnel
         self._aps_started = False    # le contrôleur APS a-t-il reçu STA ?
         self._current_stf = None     # stiffness réellement appliquée (au démarrage)
@@ -374,6 +380,20 @@ class TestBench:
         result["measured_g"] = measured
         return result
 
+    def _adaptive_acq(self, freq_hz: float, base_count: int, rate: int):
+        """Fenêtre d'acquisition adaptative à la fréquence -> (count, durée_s).
+
+        Au moins la fenêtre de base (base_count/rate), au moins acq_min_cycles
+        cycles (essentiel en BF où la fenêtre de base ne contient pas un cycle
+        entier -> lock-in bruité), plafonnée à acq_max_duration_s pour borner
+        la durée du balayage.
+        """
+        base_dur = base_count / float(rate)
+        target_dur = (self._acq_min_cycles / freq_hz) if freq_hz > 0 else base_dur
+        dur = max(base_dur, min(target_dur, self._acq_max_duration_s))
+        count = max(int(base_count), int(round(dur * rate)))
+        return count, count / float(rate)
+
     def _measure_point_sync(self, freq_hz: float,
                             geophone_count: int, geophone_rate: int) -> dict:
         """
@@ -385,7 +405,10 @@ class TestBench:
         Returns : measured_g, snr_db, thd_percent, et si géophone présent
         geophone_counts_peak + sensitivity_counts_per_g.
         """
-        duration = geophone_count / float(geophone_rate)
+        # Fenêtre adaptative : en BF on l'allonge pour capturer plusieurs cycles
+        # (sinon < 1 cycle sous ~1 Hz -> lock-in bruité). Géophone ET accéléro
+        # acquièrent sur la même fenêtre élargie.
+        eff_count, duration = self._adaptive_acq(freq_hz, geophone_count, geophone_rate)
 
         def _acquire_once():
             holder = {}
@@ -401,7 +424,7 @@ class TestBench:
 
             th = threading.Thread(target=_acq_accel, daemon=True)
             th.start()
-            geo = self._ads.acquire(geophone_count, geophone_rate) if self._ads else None
+            geo = self._ads.acquire(eff_count, geophone_rate) if self._ads else None
             th.join()
             if "err" in holder:
                 raise holder["err"]
@@ -482,7 +505,10 @@ class TestBench:
                 self._check_stop()
                 res = self.set_frequency_safe(freq)
                 if not res["skipped"]:
-                    m = self._accel.measure(freq, ref_channel=self._ref_channel)
+                    m = self._accel.measure(
+                        freq, n_cycles=self._acq_min_cycles,
+                        max_duration_s=self._acq_max_duration_s,
+                        ref_channel=self._ref_channel)
                     res["measured_g"] = m["accel_g"]
                     res["snr_db"] = m["snr_db"]
                     res["thd_percent"] = m["thd_percent"]
@@ -581,7 +607,10 @@ class TestBench:
                 self._check_stop()
                 res = self.set_frequency_safe(freq)
                 if not res["skipped"]:
-                    m = self._accel.measure(freq, ref_channel=self._ref_channel)
+                    m = self._accel.measure(
+                        freq, n_cycles=self._acq_min_cycles,
+                        max_duration_s=self._acq_max_duration_s,
+                        ref_channel=self._ref_channel)
                     h = m["accel_g"] / res["vpp"] if res["vpp"] > 1e-9 else 0.0
                     ref = reference.get(freq, reference.get(str(freq)))
                     dev = ratio_db(h, ref) if ref else float("nan")

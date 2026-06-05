@@ -72,6 +72,7 @@ SHAKER_SERVO_TOLERANCE    = float(get("Shaker", "servo_tolerance"))
 SHAKER_SERVO_MAX_ITER     = int(get("Shaker", "servo_max_iter"))
 SHAKER_SERVO_START_VPP    = float(get("Shaker", "servo_start_vpp"))
 SHAKER_SERVO_VPP_MAX      = float(get("Shaker", "servo_vpp_max"))
+SHAKER_SERVO_MAX_STEP     = float(get("Shaker", "servo_max_step"))
 SHAKER_GEOPHONE           = get("Shaker", "geophone")
 
 
@@ -97,6 +98,10 @@ SHAKER_STIFFNESS_SCHEDULE = {
     "vertical":   _parse_stiffness_schedule(get("Shaker", "stiffness_vertical")),
     "horizontal": _parse_stiffness_schedule(get("Shaker", "stiffness_horizontal")),
 }
+
+# Acquisition adaptative en fréquence (meilleur SNR en basse fréquence).
+SHAKER_ACQ_MIN_CYCLES     = int(get("Shaker", "acq_min_cycles"))
+SHAKER_ACQ_MAX_DURATION_S = float(get("Shaker", "acq_max_duration_s"))
 
 # --- Acquisition generale ---
 DATA_OUTPUT_DIR = get("General", "data_output_dir")
