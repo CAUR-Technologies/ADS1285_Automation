@@ -174,15 +174,39 @@ class TestBench:
     # Centrage ZER (procédure statique + vérification dynamique)
     # ──────────────────────────────────────────────────────────────────
 
+    def _sync_controller_state(self) -> bool:
+        """Synchronise les flags avec l'état RÉEL du contrôleur (STA?/STF?).
+
+        Permet de RÉUTILISER un contrôleur déjà démarré/centré (ex. laissé actif
+        entre deux tests, ou nouveau TestBench sur un contrôleur en marche) au
+        lieu de relancer le centrage (lent). Retourne True si déjà démarré.
+        """
+        try:
+            if self._aps.get_start_status():
+                self._aps_started = True
+                if self._current_stf is None:
+                    self._current_stf = self._aps.get_stiffness()
+                return True
+        except Exception:                       # noqa: BLE001
+            pass
+        return False
+
     def center_zero(self, settle_s: float = 3.0) -> int:
         """
         Centrage statique : démarre le contrôleur sans signal, lit l'asymétrie
         de position via PMA?/PMI? et ajuste ZER pour symétriser.
 
+        Si le contrôleur est DÉJÀ actif (laissé en marche entre tests), on
+        réutilise son centrage au lieu de le redémarrer (évite le centrage lent).
+
         Returns la valeur ZER finale.
         """
         self._log("[banc] centrage ZER (statique, sans signal)…")
         self._safe_shutdown()
+        if self._sync_controller_state():
+            self._log("[banc] contrôleur déjà actif — centrage réutilisé "
+                      "(pas de redémarrage).")
+            return self._zer_value
         self._aps.set_zero_position(0)
         # Démarrage souple (SSS bas) : éviter d'engager l'armature à rigidité max
         # (SSS=31 d'usine), qui sur le vertical la projette en butée haute.
@@ -236,6 +260,7 @@ class TestBench:
         est coupée et le shaker ne bouge pas.)
         """
         stf = sp.stiffness_for_freq(freq_hz, self._stiffness_schedule)
+        self._sync_controller_state()   # réutiliser un contrôleur laissé actif
 
         if self._aps_started and stf == self._current_stf:
             return stf   # déjà démarré à la bonne rigidité — rien à faire
@@ -413,12 +438,21 @@ class TestBench:
         def _acquire_once():
             holder = {}
 
+            # Taux accéléro adapté à la fréquence (PAS le plein taux NI) : un
+            # signal BF n'a pas besoin de 10 kHz, et la fenêtre adaptative à plein
+            # taux ferait des acquisitions NI énormes (0,1 Hz × 100 s = 1 M
+            # échantillons -> erreur DAQmx). Comme accelerometer.measure(), on
+            # prend ~50×f (min 200 Hz), plafonné au taux NI et à ~50 k échantillons.
+            accel_fs = int(min(max(freq_hz * 50.0, 200.0), self._accel.sample_rate))
+            if accel_fs * duration > 50000:
+                accel_fs = max(200, int(50000 / duration))
+
             def _acq_accel():
                 try:
-                    arr = self._accel.acquire_seconds(duration)
+                    arr = self._accel.acquire_seconds(duration, sample_rate=accel_fs)
                     ref = arr[self._ref_channel] if getattr(arr, "ndim", 1) == 2 else arr
                     holder["sig"] = ref
-                    holder["fs"] = self._accel.sample_rate
+                    holder["fs"] = accel_fs
                 except Exception as e:   # noqa: BLE001
                     holder["err"] = e
 
