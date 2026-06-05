@@ -71,9 +71,13 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         # 0 = pas de séquence transitoire (STA simple) : cas de l'horizontal, qui
         # ne plonge pas. Évite de tenir l'armature à la main et tout SSS élevé
         # (donc aucun risque de slam en butée).
-        "overtravel_tolerance_start_vertical":   "500",
+        # Settle long (15 s) : avec une charge (support géophone) le centrage
+        # vertical est plus lent ; l'OTT doit rester large assez longtemps sinon
+        # il se resserre avant que l'armature soit centrée → trip. start_vertical
+        # élargi à 600 pour couvrir l'excursion de centrage chargé.
+        "overtravel_tolerance_start_vertical":   "600",
         "overtravel_tolerance_start_horizontal": "0",
-        "overtravel_start_settle_s":             "6.0",
+        "overtravel_start_settle_s":             "15.0",
     },
     "Wavetek": {
         "port":    "COM5",

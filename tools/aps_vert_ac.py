@@ -37,7 +37,7 @@ from config.settings import (                                    # noqa: E402
     NI_REF_CHANNEL_HORIZONTAL,
 )
 
-VPP_STEPS = [0.005, 0.01, 0.02, 0.05, 0.1]
+VPP_STEPS = [0.05, 0.1, 0.2, 0.5, 1.0]   # chargé = g/V plus faible → amplitudes plus hautes
 
 
 def _hold_start(ctrl, axis, stf, capture_s=5.0, confirm_s=3.0) -> bool:
