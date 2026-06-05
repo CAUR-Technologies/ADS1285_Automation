@@ -295,7 +295,7 @@ class TestBench:
         measured = 0.0
         for i in range(self._servo_max_iter):
             self._check_stop()
-            applied = max(0.001, min(vpp, self._vpp_max))
+            applied = max(0.005, min(vpp, self._vpp_max))   # 5 mV = min Wavetek (sinon bip command error)
             self._wav.set_amplitude(applied)
             time.sleep(self._settle_s)
             self._check_overtravel()

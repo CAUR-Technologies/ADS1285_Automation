@@ -127,10 +127,11 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         # inatteignable a ce gain APS 125 (sortie anticipee). 10 Vpp = sortie
         # typique max du 39A sur charge ouverte.
         "servo_vpp_max":             "10.0",
-        # Montée Vpp max par itération du servo (anti-claquage). Bas = doux/sûr
-        # (important à gain ampli max sur l'axe V chargé, sinon un pas peut
-        # surdimensionner avant que le plafond accel ne réagisse).
-        "servo_max_step":            "0.5",
+        # RATIO multiplicatif max de montée Vpp par itération du servo
+        # (vpp_suivant = vpp * min(cible/mesuré, servo_max_step)). DOIT être > 1
+        # sinon le servo ne peut jamais augmenter l'amplitude. 2.0 = montée douce
+        # (×2 max/itér, vs ×3 d'origine) -> évite un claquage du Vpp à gain max.
+        "servo_max_step":            "2.0",
         # Modele de geophone candidat en cours de test (metadonnee calibration)
         "geophone":                  "HG-5VHS",
         # Bareme de rigidite (STF) par axe, adapte a la frequence. Format :
