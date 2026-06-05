@@ -82,27 +82,33 @@ class Accelerometer:
         """
         Acquisition finie avec timing reconfiguré à la volée.
 
-        Restaure le timing par défaut après lecture pour ne pas perturber
-        les appels acquire() ultérieurs.
+        DAQmx interdit de changer SampPerChan tâche en COURS (erreur -200557) :
+        on STOPPE donc la tâche avant de (re)configurer le timing. Défensif aussi
+        si une acquisition précédente a laissé la tâche démarrée (ex. read en
+        erreur) — sinon TOUTES les acquisitions suivantes échouent en -200557.
+        Le `finally` garantit le stop même si le read lève (timeout, etc.).
         """
         if not self._task:
             raise RuntimeError("Accéléromètre non connecté.")
+        try:
+            self._task.stop()
+        except Exception:            # noqa: BLE001 — déjà arrêtée : OK
+            pass
         self._task.timing.cfg_samp_clk_timing(
             rate=sample_rate,
             sample_mode=AcquisitionType.FINITE,
             samps_per_chan=samples,
         )
         self._task.start()
-        timeout = samples / sample_rate + 5.0
-        data = self._task.read(number_of_samples_per_channel=samples,
-                               timeout=timeout)
-        self._task.stop()
-        # Restaurer le timing par défaut
-        self._task.timing.cfg_samp_clk_timing(
-            rate=self._sample_rate,
-            sample_mode=AcquisitionType.FINITE,
-            samps_per_chan=self._samples_per_channel,
-        )
+        try:
+            timeout = samples / sample_rate + 5.0
+            data = self._task.read(number_of_samples_per_channel=samples,
+                                   timeout=timeout)
+        finally:
+            try:
+                self._task.stop()
+            except Exception:        # noqa: BLE001
+                pass
         return np.array(data)
 
     def _ref_idx(self, ref_channel):
