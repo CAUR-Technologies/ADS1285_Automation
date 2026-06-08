@@ -35,7 +35,10 @@ from config.settings import (
     SHAKER_SERVO_MAX_ITER,
     SHAKER_SERVO_START_VPP,
     SHAKER_SERVO_VPP_MAX,
+    SHAKER_SERVO_MAX_STEP,
     SHAKER_GEOPHONE_MAX_VELOCITY_MPS,
+    SHAKER_ACQ_MIN_CYCLES,
+    SHAKER_ACQ_MAX_DURATION_S,
 )
 from constants import SNR_MIN_DB
 
@@ -88,7 +91,7 @@ class TestBench:
         self._servo_tol = servo_tolerance
         self._servo_max_iter = servo_max_iter
         self._servo_start_vpp = servo_start_vpp
-        self._servo_max_step = 3.0   # montée Vpp max par itération (anti-claquage)
+        self._servo_max_step = SHAKER_SERVO_MAX_STEP   # montée Vpp max/itération (anti-claquage)
         self._vpp_max = vpp_max
         self._v_max = geophone_max_velocity_mps   # vitesse crête max géophone (m/s)
         self._stiffness_schedule = stiffness_schedule  # barème STF par axe (config)
@@ -96,6 +99,9 @@ class TestBench:
         self._zer_value = 0          # dernière valeur ZER appliquée (-99..99)
         self._settle_s = 4.0         # temps de stabilisation par défaut (s)
         self._acq_retries = 1        # retentatives d'acquisition géophone sur échec
+        # Acquisition adaptative en fréquence (>= N cycles, plafonnée) — BF
+        self._acq_min_cycles = SHAKER_ACQ_MIN_CYCLES
+        self._acq_max_duration_s = SHAKER_ACQ_MAX_DURATION_S
         self._stop = None            # threading.Event optionnel
         self._aps_started = False    # le contrôleur APS a-t-il reçu STA ?
         self._current_stf = None     # stiffness réellement appliquée (au démarrage)
@@ -168,15 +174,39 @@ class TestBench:
     # Centrage ZER (procédure statique + vérification dynamique)
     # ──────────────────────────────────────────────────────────────────
 
+    def _sync_controller_state(self) -> bool:
+        """Synchronise les flags avec l'état RÉEL du contrôleur (STA?/STF?).
+
+        Permet de RÉUTILISER un contrôleur déjà démarré/centré (ex. laissé actif
+        entre deux tests, ou nouveau TestBench sur un contrôleur en marche) au
+        lieu de relancer le centrage (lent). Retourne True si déjà démarré.
+        """
+        try:
+            if self._aps.get_start_status():
+                self._aps_started = True
+                if self._current_stf is None:
+                    self._current_stf = self._aps.get_stiffness()
+                return True
+        except Exception:                       # noqa: BLE001
+            pass
+        return False
+
     def center_zero(self, settle_s: float = 3.0) -> int:
         """
         Centrage statique : démarre le contrôleur sans signal, lit l'asymétrie
         de position via PMA?/PMI? et ajuste ZER pour symétriser.
 
+        Si le contrôleur est DÉJÀ actif (laissé en marche entre tests), on
+        réutilise son centrage au lieu de le redémarrer (évite le centrage lent).
+
         Returns la valeur ZER finale.
         """
         self._log("[banc] centrage ZER (statique, sans signal)…")
         self._safe_shutdown()
+        if self._sync_controller_state():
+            self._log("[banc] contrôleur déjà actif — centrage réutilisé "
+                      "(pas de redémarrage).")
+            return self._zer_value
         self._aps.set_zero_position(0)
         # Démarrage souple (SSS bas) : éviter d'engager l'armature à rigidité max
         # (SSS=31 d'usine), qui sur le vertical la projette en butée haute.
@@ -230,6 +260,7 @@ class TestBench:
         est coupée et le shaker ne bouge pas.)
         """
         stf = sp.stiffness_for_freq(freq_hz, self._stiffness_schedule)
+        self._sync_controller_state()   # réutiliser un contrôleur laissé actif
 
         if self._aps_started and stf == self._current_stf:
             return stf   # déjà démarré à la bonne rigidité — rien à faire
@@ -289,7 +320,7 @@ class TestBench:
         measured = 0.0
         for i in range(self._servo_max_iter):
             self._check_stop()
-            applied = max(0.001, min(vpp, self._vpp_max))
+            applied = max(0.005, min(vpp, self._vpp_max))   # 5 mV = min Wavetek (sinon bip command error)
             self._wav.set_amplitude(applied)
             time.sleep(self._settle_s)
             self._check_overtravel()
@@ -374,6 +405,20 @@ class TestBench:
         result["measured_g"] = measured
         return result
 
+    def _adaptive_acq(self, freq_hz: float, base_count: int, rate: int):
+        """Fenêtre d'acquisition adaptative à la fréquence -> (count, durée_s).
+
+        Au moins la fenêtre de base (base_count/rate), au moins acq_min_cycles
+        cycles (essentiel en BF où la fenêtre de base ne contient pas un cycle
+        entier -> lock-in bruité), plafonnée à acq_max_duration_s pour borner
+        la durée du balayage.
+        """
+        base_dur = base_count / float(rate)
+        target_dur = (self._acq_min_cycles / freq_hz) if freq_hz > 0 else base_dur
+        dur = max(base_dur, min(target_dur, self._acq_max_duration_s))
+        count = max(int(base_count), int(round(dur * rate)))
+        return count, count / float(rate)
+
     def _measure_point_sync(self, freq_hz: float,
                             geophone_count: int, geophone_rate: int) -> dict:
         """
@@ -385,24 +430,47 @@ class TestBench:
         Returns : measured_g, snr_db, thd_percent, et si géophone présent
         geophone_counts_peak + sensitivity_counts_per_g.
         """
-        duration = geophone_count / float(geophone_rate)
+        # Fenêtre adaptative : en BF on l'allonge pour capturer plusieurs cycles
+        # (sinon < 1 cycle sous ~1 Hz -> lock-in bruité). Seul l'ACCÉLÉRO étend sa
+        # fenêtre (NI le permet) ; le géophone reste à geophone_count (buffer PSM
+        # ADS1285 figé -> count plus grand = crash DLL). Pour allonger la fenêtre
+        # géophone en BF, baisser le taux ADS1285 (250 SPS -> 4× plus de temps).
+        _eff_count, duration = self._adaptive_acq(freq_hz, geophone_count, geophone_rate)
 
         def _acquire_once():
             holder = {}
 
+            # Taux accéléro adapté à la fréquence (PAS le plein taux NI) : un
+            # signal BF n'a pas besoin de 10 kHz, et la fenêtre adaptative à plein
+            # taux ferait des acquisitions NI énormes (0,1 Hz × 100 s = 1 M
+            # échantillons -> erreur DAQmx). Comme accelerometer.measure(), on
+            # prend ~50×f (min 200 Hz), plafonné au taux NI et à ~50 k échantillons.
+            accel_fs = int(min(max(freq_hz * 50.0, 200.0), self._accel.sample_rate))
+            if accel_fs * duration > 50000:
+                accel_fs = max(200, int(50000 / duration))
+
             def _acq_accel():
                 try:
-                    arr = self._accel.acquire_seconds(duration)
+                    arr = self._accel.acquire_seconds(duration, sample_rate=accel_fs)
                     ref = arr[self._ref_channel] if getattr(arr, "ndim", 1) == 2 else arr
                     holder["sig"] = ref
-                    holder["fs"] = self._accel.sample_rate
+                    holder["fs"] = accel_fs
                 except Exception as e:   # noqa: BLE001
                     holder["err"] = e
 
             th = threading.Thread(target=_acq_accel, daemon=True)
             th.start()
-            geo = self._ads.acquire(geophone_count, geophone_rate) if self._ads else None
-            th.join()
+            try:
+                # Le buffer PSM de l'ADS1285 est dimensionné pour geophone_count :
+                # lui demander eff_count (élargi en BF) fait planter le DLL TI
+                # (PHI_RunPSM -> access violation). On garde donc le géophone à son
+                # count de base ; seul l'accéléro étend sa fenêtre (meilleur SNR réf).
+                geo = self._ads.acquire(geophone_count, geophone_rate) if self._ads else None
+            finally:
+                # TOUJOURS attendre le thread accéléro, même si le géophone lève
+                # (bridge ADS1285 instable) : sinon le thread reste orphelin avec
+                # la tâche NI démarrée -> l'acquisition suivante plante en -200557.
+                th.join()
             if "err" in holder:
                 raise holder["err"]
             return holder["sig"], holder["fs"], geo
@@ -482,7 +550,10 @@ class TestBench:
                 self._check_stop()
                 res = self.set_frequency_safe(freq)
                 if not res["skipped"]:
-                    m = self._accel.measure(freq, ref_channel=self._ref_channel)
+                    m = self._accel.measure(
+                        freq, n_cycles=self._acq_min_cycles,
+                        max_duration_s=self._acq_max_duration_s,
+                        ref_channel=self._ref_channel)
                     res["measured_g"] = m["accel_g"]
                     res["snr_db"] = m["snr_db"]
                     res["thd_percent"] = m["thd_percent"]
@@ -581,7 +652,10 @@ class TestBench:
                 self._check_stop()
                 res = self.set_frequency_safe(freq)
                 if not res["skipped"]:
-                    m = self._accel.measure(freq, ref_channel=self._ref_channel)
+                    m = self._accel.measure(
+                        freq, n_cycles=self._acq_min_cycles,
+                        max_duration_s=self._acq_max_duration_s,
+                        ref_channel=self._ref_channel)
                     h = m["accel_g"] / res["vpp"] if res["vpp"] > 1e-9 else 0.0
                     ref = reference.get(freq, reference.get(str(freq)))
                     dev = ratio_db(h, ref) if ref else float("nan")

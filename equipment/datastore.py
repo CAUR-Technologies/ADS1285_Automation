@@ -1,15 +1,19 @@
 """
 Sauvegarde automatique des donnees d'acquisition et de calibration.
 
-Chaque execution ecrit dans DATA_OUTPUT_DIR un fichier nomme selon le cas,
-horodate comme le journal (logs/bench_<date>_<heure>.log) :
+Les fichiers sont ranges dans des SOUS-DOSSIERS de DATA_OUTPUT_DIR :
+  * un dossier par geophone (nom du modele) pour les donnees liees a un geophone ;
+  * un dossier 'H_Banc' pour les donnees de banc (transfert banc, plancher de
+    bruit, verif quotidienne) qui n'impliquent pas de geophone.
+
+Nom de fichier horodate comme le journal (logs/bench_<date>_<heure>.log) :
 
     <cas>[_<geophone>][_<axe>]_<AAAA-MM-JJ_HH-MM-SS>.<ext>
 
 Exemples :
-    acquisition_HG-5VHS_2026-05-28_13-05-12.csv
-    balayage_HG-5VHS_vertical_2026-05-28_13-05-12.csv
-    transfert_banc_vertical_2026-05-28_13-05-12.csv
+    HG-5VHS/acquisition_HG-5VHS_2026-05-28_13-05-12.csv
+    HG-5VHS/balayage_HG-5VHS_vertical_2026-05-28_13-05-12.csv
+    H_Banc/transfert_banc_vertical_2026-05-28_13-05-12.csv
 """
 
 import os
@@ -52,8 +56,11 @@ def build_path(case: str, ext: str, *, geophone=None, axis=None,
         parts.append(f"{freq:g}Hz")
     parts.append(ts or timestamp())
     fname = "_".join(parts) + "." + ext.lstrip(".")
-    os.makedirs(DATA_OUTPUT_DIR, exist_ok=True)
-    return os.path.join(DATA_OUTPUT_DIR, fname)
+    # Sous-dossier : par geophone si fourni, sinon 'H_Banc' (donnees de banc).
+    subdir = _slug(geophone) if geophone else "H_Banc"
+    out_dir = os.path.join(DATA_OUTPUT_DIR, subdir)
+    os.makedirs(out_dir, exist_ok=True)
+    return os.path.join(out_dir, fname)
 
 
 def _fmt(value) -> str:

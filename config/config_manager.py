@@ -53,6 +53,31 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "amplifier_gain_horizontal":        "",
         "amplifier_current_limit_vertical":   "",
         "amplifier_current_limit_horizontal": "",
+        # Tolerance overtravel (OTT, 0..1023) appliquee au demarrage de chaque
+        # controleur. OTT=0 = trip au moindre ecart de position : sur l'axe
+        # VERTICAL l'armature flue sous la gravite jusqu'a un petit creux
+        # d'equilibre, donc OTT=0 trippe avant que le controleur ait developpe
+        # sa force de maintien. OTT=50 (~4x le creux a vide) tient le droop tout
+        # en restant loin de la butee +/-38 mm. L'axe HORIZONTAL ne droope pas
+        # (pas de gravite sur son axe) -> OTT=0 suffit. Re-applique a chaque
+        # connect car un power-cycle / RST usine du 0109 le remet a 0.
+        "overtravel_tolerance_vertical":   "50",
+        "overtravel_tolerance_horizontal": "0",
+        # Démarrage hands-free de l'axe vertical via OTT TRANSITOIRE : au STA
+        # souple l'armature plonge sous la gravité avant que le contrôleur ne
+        # développe sa force ; la plongée dépasse l'OTT opérationnel et arme un
+        # trip. On élargit donc l'OTT le temps que le contrôleur ramène l'armature
+        # à zéro (start_settle_s), puis on resserre à overtravel_tolerance_*.
+        # 0 = pas de séquence transitoire (STA simple) : cas de l'horizontal, qui
+        # ne plonge pas. Évite de tenir l'armature à la main et tout SSS élevé
+        # (donc aucun risque de slam en butée).
+        # Settle long (15 s) : avec une charge (support géophone) le centrage
+        # vertical est plus lent ; l'OTT doit rester large assez longtemps sinon
+        # il se resserre avant que l'armature soit centrée → trip. start_vertical
+        # élargi à 600 pour couvrir l'excursion de centrage chargé.
+        "overtravel_tolerance_start_vertical":   "600",
+        "overtravel_tolerance_start_horizontal": "0",
+        "overtravel_start_settle_s":             "15.0",
     },
     "Wavetek": {
         "port":    "COM5",
@@ -102,6 +127,11 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         # inatteignable a ce gain APS 125 (sortie anticipee). 10 Vpp = sortie
         # typique max du 39A sur charge ouverte.
         "servo_vpp_max":             "10.0",
+        # RATIO multiplicatif max de montée Vpp par itération du servo
+        # (vpp_suivant = vpp * min(cible/mesuré, servo_max_step)). DOIT être > 1
+        # sinon le servo ne peut jamais augmenter l'amplitude. 2.0 = montée douce
+        # (×2 max/itér, vs ×3 d'origine) -> évite un claquage du Vpp à gain max.
+        "servo_max_step":            "2.0",
         # Modele de geophone candidat en cours de test (metadonnee calibration)
         "geophone":                  "HG-5VHS",
         # Bareme de rigidite (STF) par axe, adapte a la frequence. Format :
@@ -110,6 +140,14 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         # A STF eleve le controleur annule la vibration ; trop bas -> derive.
         "stiffness_vertical":        "10:3, 50:5, *:8",
         "stiffness_horizontal":      "10:3, 50:5, *:8",
+        # Acquisition ADAPTATIVE en fréquence (essentiel en basse fréquence).
+        # La fenêtre d'acquisition (géophone + accéléro) est allongée en BF pour
+        # capturer >= acq_min_cycles cycles -> le lock-in moyenne sur plus de
+        # cycles -> meilleur SNR (sinon < 1 cycle sous 1 Hz). Plafonnée à
+        # acq_max_duration_s pour borner la durée du balayage (ex. 0,1 Hz, 4
+        # cycles = 40 s/point). En haute fréquence la fenêtre de base suffit.
+        "acq_min_cycles":            "4",
+        "acq_max_duration_s":        "60.0",
     },
     "General": {
         "data_output_dir": "data",

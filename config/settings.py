@@ -28,6 +28,22 @@ APS125_GAIN_HORIZONTAL         = get("APS", "amplifier_gain_horizontal")
 APS125_CURRENT_LIMIT_VERTICAL   = get("APS", "amplifier_current_limit_vertical")
 APS125_CURRENT_LIMIT_HORIZONTAL = get("APS", "amplifier_current_limit_horizontal")
 
+# Tolerance overtravel (OTT) appliquee au demarrage de chaque controleur 0109.
+# Voir config_manager pour le pourquoi (OTT=0 trippe le V sur le droop gravite).
+APS_OVERTRAVEL_TOLERANCE = {
+    "vertical":   int(get("APS", "overtravel_tolerance_vertical")),
+    "horizontal": int(get("APS", "overtravel_tolerance_horizontal")),
+}
+
+# OTT TRANSITOIRE de demarrage (large) par axe ; 0 = STA simple (horizontal).
+# Permet un STA vertical hands-free : large pendant la plongee gravite, puis
+# resserrage a APS_OVERTRAVEL_TOLERANCE apres start_settle_s.
+APS_OVERTRAVEL_START = {
+    "vertical":   int(get("APS", "overtravel_tolerance_start_vertical")),
+    "horizontal": int(get("APS", "overtravel_tolerance_start_horizontal")),
+}
+APS_OVERTRAVEL_START_SETTLE_S = float(get("APS", "overtravel_start_settle_s"))
+
 # --- Wavetek Model 39A ---
 WAVETEK_PORT    = get("Wavetek", "port")
 WAVETEK_BAUD    = int(get("Wavetek", "baud"))
@@ -56,6 +72,7 @@ SHAKER_SERVO_TOLERANCE    = float(get("Shaker", "servo_tolerance"))
 SHAKER_SERVO_MAX_ITER     = int(get("Shaker", "servo_max_iter"))
 SHAKER_SERVO_START_VPP    = float(get("Shaker", "servo_start_vpp"))
 SHAKER_SERVO_VPP_MAX      = float(get("Shaker", "servo_vpp_max"))
+SHAKER_SERVO_MAX_STEP     = float(get("Shaker", "servo_max_step"))
 SHAKER_GEOPHONE           = get("Shaker", "geophone")
 
 
@@ -81,6 +98,10 @@ SHAKER_STIFFNESS_SCHEDULE = {
     "vertical":   _parse_stiffness_schedule(get("Shaker", "stiffness_vertical")),
     "horizontal": _parse_stiffness_schedule(get("Shaker", "stiffness_horizontal")),
 }
+
+# Acquisition adaptative en fréquence (meilleur SNR en basse fréquence).
+SHAKER_ACQ_MIN_CYCLES     = int(get("Shaker", "acq_min_cycles"))
+SHAKER_ACQ_MAX_DURATION_S = float(get("Shaker", "acq_max_duration_s"))
 
 # --- Acquisition generale ---
 DATA_OUTPUT_DIR = get("General", "data_output_dir")

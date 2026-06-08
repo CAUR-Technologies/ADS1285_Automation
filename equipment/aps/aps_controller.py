@@ -18,6 +18,9 @@ from config.settings import (
     APS_CONTROLLER_HORIZONTAL_PORT,
     APS_BAUD,
     APS_TIMEOUT,
+    APS_OVERTRAVEL_TOLERANCE,
+    APS_OVERTRAVEL_START,
+    APS_OVERTRAVEL_START_SETTLE_S,
 )
 from equipment.instrlog import get_logger
 
@@ -78,6 +81,30 @@ class APSController:
         time.sleep(0.5)
         self._drain()
         print(f"APS 0109 [{self._axis}] connecté sur {self._port} (baud={self._baud}).")
+        self._apply_overtravel_tolerance()
+
+    def _apply_overtravel_tolerance(self) -> None:
+        """Ré-applique la tolérance overtravel (OTT) configurée pour cet axe.
+
+        OTT=0 (défaut usine du 0109) trippe le contrôleur au moindre écart de
+        position : l'axe vertical, dont l'armature flue sous la gravité, coupe
+        alors avant d'avoir développé sa force de maintien. On force donc l'OTT
+        configuré à chaque connexion (un power-cycle / RST usine le remet à 0).
+        Défensif : un échec d'écriture logge un warning sans casser la connexion.
+        """
+        target = APS_OVERTRAVEL_TOLERANCE.get(self._axis)
+        if target is None:
+            return
+        try:
+            self.set_overtravel_tolerance(target)
+            applied = self.get_overtravel_tolerance()
+            if applied != target:
+                self._log.warning(
+                    f"[{self._axis}] OTT demandé {target} mais relu {applied}.")
+            else:
+                self._log.info(f"[{self._axis}] OTT appliqué = {applied}.")
+        except Exception as e:                          # noqa: BLE001
+            self._log.warning(f"[{self._axis}] échec application OTT={target} : {e}")
 
     def disconnect(self) -> None:
         """Ferme la connexion série."""
@@ -216,8 +243,37 @@ class APSController:
     # ─────────────────────────────────────────────────────────────────────
 
     def start(self) -> None:
-        """Démarre le contrôleur (STA)."""
-        self._send_command("STA")
+        """Démarre le contrôleur (STA).
+
+        Pour un axe configuré avec un OTT de démarrage élargi (vertical), exécute
+        une séquence OTT-TRANSITOIRE : élargit la tolérance overtravel le temps que
+        l'armature plonge sous la gravité et que le contrôleur la ramène à zéro,
+        puis resserre à l'OTT opérationnel. Démarre hands-free sans tripper, sans
+        tenir l'armature ni démarrer à rigidité élevée (donc pas de slam). Les
+        autres axes (horizontal, start_ott=0) font un STA simple.
+        """
+        start_ott = APS_OVERTRAVEL_START.get(self._axis, 0)
+        if start_ott <= 0:
+            self._send_command("STA")
+            return
+
+        hold_ott = APS_OVERTRAVEL_TOLERANCE.get(self._axis, 0)
+        self._log.info(
+            f"[{self._axis}] STA OTT-transitoire : OTT={start_ott} → STA → "
+            f"settle {APS_OVERTRAVEL_START_SETTLE_S:.1f}s → OTT={hold_ott}")
+        try:
+            self.set_overtravel_tolerance(start_ott)
+        except Exception as e:                       # noqa: BLE001
+            self._log.warning(f"[{self._axis}] OTT large non réglé : {e}")
+        try:
+            self._send_command("STA")
+            time.sleep(APS_OVERTRAVEL_START_SETTLE_S)  # plongée + récupération à zéro
+        finally:
+            # Toujours resserrer la protection, même si STA a échoué.
+            try:
+                self.set_overtravel_tolerance(hold_ott)
+            except Exception as e:                   # noqa: BLE001
+                self._log.warning(f"[{self._axis}] OTT non resserré à {hold_ott} : {e}")
 
     def get_start_status(self) -> bool:
         """True si le contrôleur est en marche (STA?)."""
