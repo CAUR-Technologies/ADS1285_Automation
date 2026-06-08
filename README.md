@@ -1,4 +1,4 @@
-# ADS1285 Automation
+# Geophones Characterization Testbench
 
 Système d'automatisation pour l'**ADS1285 EVM** — mesure et caractérisation de géophones avec acquisition synchronisée et balayage fréquentiel.
 
@@ -32,7 +32,7 @@ Voir [`docs/CALIBRATION_PROTOCOL.md`](docs/CALIBRATION_PROTOCOL.md).
 ## 📦 Architecture
 
 ```
-ADS1285_Automation/
+geophones-characterization-testbench/
 ├── constants.py            # Constantes physiques/matérielles immuables
 ├── equipment/              # Pilotes + orchestration
 │   ├── ads1285/           # ADC ADS1285 (bridge 32-bit) — géophone testé
@@ -51,18 +51,24 @@ ADS1285_Automation/
 ## 🚀 Installation
 
 ### Prérequis
-- **Python 3.10+** (64-bit)
-- **Python 3.11 32-bit** (pour bridge ADS1285)
+- **Python 3.11** (64-bit) — version épinglée du projet, **pas 3.12**
+- **Python 3.11 32-bit** (`C:\Python311-32`) — requis pour le bridge ADS1285
 - **Texas Instruments PHI Package** (DLL + binaires FPGA/PSM)
 - **NI-DAQmx** (pour accéléromètres)
 - **Pilotes série USB** (CH340, FTDI, etc.)
+
+> ⚠️ **Version Python** : le projet est figé sur **3.11** (64-bit ET 32-bit). Une
+> autre version (ex. 3.12) peut coexister sur la machine, mais **n'utilisez pas
+> 3.12 ici** : le bridge ADS1285 a besoin d'un interpréteur **32-bit**, et seul
+> `C:\Python311-32` (3.11) est disponible (il n'existe pas de 3.12 32-bit). Créez
+> le venv 64-bit avec Python 3.11 (`py -3.11 -m venv venv`).
 
 ### Setup
 
 ```bash
 # Cloner le repo
-git clone https://github.com/CAUR-Technologies/ADS1285_Automation.git
-cd ADS1285_Automation
+git clone https://github.com/CAUR-Technologies/geophones-characterization-testbench.git
+cd geophones-characterization-testbench
 
 # Créer venv Python 64-bit
 python -m venv venv

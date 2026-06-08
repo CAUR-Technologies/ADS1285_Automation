@@ -3,7 +3,7 @@ requires = ["setuptools>=65.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ads1285-automation"
+name = "geophones-characterization-testbench"
 version = "0.1.0"
 description = "ADS1285 EVM automation system for seismic and vibration measurements"
 readme = "README.md"
@@ -18,11 +18,12 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Operating System :: Microsoft :: Windows",
 ]
-requires-python = ">=3.10"
+# Projet figé sur Python 3.11 (64-bit ET bridge 32-bit C:\Python311-32) ; pas de
+# 3.12 32-bit disponible pour le bridge ADS1285 -> ne pas passer à 3.12.
+requires-python = ">=3.11,<3.12"
 dependencies = [
     "pyserial>=3.5",
     "numpy>=1.24.0",
@@ -45,16 +46,16 @@ elf = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/CAUR-Technologies/ADS1285_Automation"
-Repository = "https://github.com/CAUR-Technologies/ADS1285_Automation.git"
-"Bug Tracker" = "https://github.com/CAUR-Technologies/ADS1285_Automation/issues"
+Homepage = "https://github.com/CAUR-Technologies/geophones-characterization-testbench"
+Repository = "https://github.com/CAUR-Technologies/geophones-characterization-testbench.git"
+"Bug Tracker" = "https://github.com/CAUR-Technologies/geophones-characterization-testbench/issues"
 
 [tool.setuptools]
 packages = ["equipment", "config", "tests"]
 
 [tool.black]
 line-length = 100
-target-version = ['py310', 'py311']
+target-version = ['py311']
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

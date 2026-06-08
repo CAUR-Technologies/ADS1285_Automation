@@ -74,7 +74,9 @@ Voir `bridge/` et `equipment/ads1285/`.
   dans `config.ini` (via `config/settings.py`). Ne pas dupliquer.
 
 ## Stack réel
-- Python 3.11 (64-bit) + un interpréteur **32-bit** dédié pour `bridge32.py`
+- Python **3.11** (64-bit, version épinglée — **pas 3.12**) + un interpréteur
+  **32-bit** dédié 3.11 (`C:\Python311-32`) pour `bridge32.py`. Le bridge n'a pas
+  d'équivalent 3.12 32-bit → rester sur 3.11 même si un 3.12 coexiste sur la machine.
 - `pyserial` (APS 0109, Wavetek), `numpy`/`scipy`, `matplotlib` (GUI Tkinter)
 - `nidaqmx` (accéléromètre NI), `ctypes` (bridge ↔ DLL TI)
 - Config : `config.ini` (PAS de yaml) via `config/config_manager.py`
