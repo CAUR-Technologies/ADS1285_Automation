@@ -205,41 +205,36 @@ para("C'est la grandeur de référence de la limite basse fréquence (§4) : tou
      "sont comparables (~0,6 mg), cohérent avec une chaîne accéléro identique. (Mesures de "
      "référence du 2026-05-28 ; chaîne accéléro inchangée.)", italic=True, color=GREY)
 
-# ---- 8. ANT
-heading("8. Appréciation — meilleurs candidats pour l'ANT (2 Hz et 5 Hz)", 1)
-para("Critère déterminant pour l'ANT : la sensibilité en vitesse à la fréquence d'intérêt "
-     "(plus elle est haute, mieux le capteur extrait le faible bruit ambiant). On compare la "
-     "sensibilité réellement mesurée à 2 Hz et 5 Hz (qui intègre le roll-off f² de chaque "
-     "capteur), pas seulement le plateau.")
-table(["Géophone", "Axe", "@ 2 Hz", "@ 5 Hz", "f0", "ζ"],
-      [["ST-2A (V)", "V", "79 V/(m/s)", "187 V/(m/s)", "3,3", "1,00"],
-       ["ST-2A (H)", "H", "79 V/(m/s)", "182 V/(m/s)", "5,9", "0,50"],
-       ["HG-2 U", "V", "71 V/(m/s)", "127 V/(m/s)", "3,6", "0,52"],
-       ["HG-5VHS", "V", "18 V/(m/s)", "122 V/(m/s)", "4,5", "0,63"],
-       ["VAS-H-200", "H", "14 V/(m/s)", "39 V/(m/s)", "7,2", "1,16"],
-       ["HG-6XT UB", "V", "6,8 V/(m/s)", "33 V/(m/s)", "5,4", "0,52"],
-       ["HG-6 HB", "H", "6,8 V/(m/s)", "34 V/(m/s)", "6,5", "0,25"],
-       ["VAS-200 (V)", "V", "6,0 V/(m/s)", "21 V/(m/s)", "2,5", "2,00"]])
-para("À 5 Hz — choix large : ST-2A (≈185), HG-2 U (127) et HG-5VHS (122) sont ~4 à 6× plus "
-     "sensibles que les HG-6 (≈33), tous au plateau ou proches.")
-para("À 2 Hz — beaucoup plus sélectif : tous les capteurs sont sous/près de leur f0 "
-     "(roll-off f²), donc seuls ceux à plateau élevé tiennent : ST-2A (≈79) et HG-2 U (≈71) "
-     "dominent ; les autres décrochent (HG-5VHS 18, HG-6 6,8, VAS 6).")
-para("Précision : à 2 Hz le banc excite faiblement (§4), donc les valeurs absolues des plus "
-     "sensibles portent une incertitude plus grande (SNR banc < 20 dB) — mais le classement "
-     "est robuste (confirmé par les plateaux et les valeurs à 5 Hz). Ce SNR faible est une "
-     "limite du banc, pas du capteur : sur le terrain c'est la sensibilité intrinsèque qui "
-     "prime.", italic=True, color=GREY)
-para("Recommandations ANT :", bold=True)
-numbered("1er choix, 2 Hz ET 5 Hz : ST-2A. Sensibilité la plus haute aux deux fréquences, "
-         "f0 basse (≈ 3,3 Hz côté V), amortissement proche du critique (réponse lisse), "
-         "concordance datasheet validée. Idéal pour la bande basse de l'ANT.")
-numbered("2ᵉ choix : HG-2 U. Quasi égal au ST-2A à 2 Hz, excellent à 5 Hz, petit capteur "
-         "2,5 Hz — sous réserve de confirmer sa spec.")
-numbered("HG-5VHS : bon à partir de 5 Hz, décroche à 2 Hz -> bande ≥ 5 Hz.")
-numbered("HG-6 (XT UB / HB) : sensibilité modeste, mieux adaptés ≥ 5–10 Hz ; robustes et "
-         "très bien caractérisés (HG-6 HB fiable 1–100 Hz).")
-numbered("VAS (200 / H-200) : à écarter tant que l'anomalie n'est pas résolue.")
+# ---- 8. ANT (par classe de fréquence naturelle)
+heading("8. Appréciation — meilleurs candidats par classe de fréquence naturelle", 1)
+para("Le choix d'un géophone pour l'ANT se fait d'abord par sa fréquence naturelle f0 — la "
+     "fréquence de coupure du capteur (plat au-dessus, roll-off f² en dessous) : f0 fixe la "
+     "fréquence la plus basse exploitable. On groupe les 8 unités par classe (~2 Hz et ~5 Hz, "
+     "d'après la fiche) et on désigne le meilleur de chaque classe. Le critère au sein d'une "
+     "classe est la sensibilité de plateau (la plus haute = meilleur rendement), avec une "
+     "réponse propre (plateau franc, bon ajustement 2ᵉ ordre).")
+table(["Classe", "Géophone", "f0 spec", "f0 mes.", "Sensibilité plateau", "Verdict"],
+      [["~2 Hz", "ST-2A (V/H)", "2,0 Hz", "3,3 / 5,9", "294 / 272 V/(m/s)", "★ meilleur 2 Hz"],
+       ["", "HG-2 U", "2,5 Hz", "3,6", "170 V/(m/s)", "2ᵉ (spec à confirmer)"],
+       ["~5 Hz", "HG-5VHS", "5,0 Hz", "4,5", "118 V/(m/s)", "★ meilleur 5 Hz"],
+       ["", "HG-6XT UB / HB", "4,5 Hz", "5,4 / 6,5", "38 / 36 V/(m/s)", "robuste, bande large"],
+       ["", "VAS-200 / H-200", "4,5 Hz", "(anomalie)", "≥ 141 (non plaf.)", "à écarter"]])
+para("Classe ~2 Hz (capteurs basse fréquence, pour la bande basse de l'ANT) :", bold=True)
+bullet("Meilleur : ST-2A. f0 la plus basse du lot (2,0 Hz nominal), sensibilité la plus "
+       "haute (~280 V/(m/s) moy. V/H), datasheet validée (+5…+13 %), amortissement proche du "
+       "critique (réponse lisse). Le capteur de référence pour descendre bas.")
+bullet("HG-2 U (2,5 Hz) : sensibilité élevée (~170 V/(m/s)) et fit propre, mais spec à "
+       "confirmer (mesure très au-dessus de l'estimation ~50). Bon second candidat 2 Hz.")
+para("Classe ~5 Hz (pour une bande utile ≥ 5 Hz) :", bold=True)
+bullet("Meilleur : HG-5VHS. La plus sensible des 5 Hz (~118 V/(m/s), +18 % vs spec), plateau "
+       "franc, f0 = 4,5 Hz pile sur la spec. À privilégier pour le rendement.")
+bullet("HG-6 (XT UB / HB) : robustes et très bien caractérisés (HG-6 HB fiable 1–100 Hz, la "
+       "bande la plus large), mais sensibilité modeste (~37 V/(m/s), classe SM-6). Si la "
+       "robustesse / largeur de bande prime sur la sensibilité.")
+bullet("VAS-200 / VAS-H-200 (4,5 Hz nominal) : à écarter — anomalie reproductible (non "
+       "plafonné jusqu'à 100 Hz) sur les deux axes.")
+para("Synthèse : classe 2 Hz → ST-2A (HG-2 U second) ; classe 5 Hz → HG-5VHS (ou un HG-6 si "
+     "robustesse / bande large prioritaire).", bold=True)
 
 # ---- 9. CONCLUSIONS
 heading("9. Conclusions et recommandations", 1)
@@ -252,7 +247,8 @@ numbered("VAS-200 (V) et VAS-H-200 : anomalie reproductible sur les deux axes ->
 numbered("HG-2 U : confirmer la spec (sensibilité mesurée ~170 vs estimation ~50).")
 numbered("Basse fréquence : limite physique (course + plancher de bruit + roll-off f²), non "
          "logicielle.")
-numbered("Pour l'ANT : ST-2A en 1er choix (2 et 5 Hz), HG-2 U en second.")
+numbered("Pour l'ANT : classe 2 Hz → ST-2A (HG-2 U second) ; classe 5 Hz → HG-5VHS (ou un "
+         "HG-6 si robustesse / bande large prioritaire).")
 
 doc.add_paragraph()
 para("Données : 2026-06-05 → 2026-06-08. Figures et synthèse : tools/rapport_geophones_all.py ; "
