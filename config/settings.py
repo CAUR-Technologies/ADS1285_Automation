@@ -103,5 +103,17 @@ SHAKER_STIFFNESS_SCHEDULE = {
 SHAKER_ACQ_MIN_CYCLES     = int(get("Shaker", "acq_min_cycles"))
 SHAKER_ACQ_MAX_DURATION_S = float(get("Shaker", "acq_max_duration_s"))
 
+# --- GNSS (horodatage NMEA GPGGA + 1PPS sur carte NI) ---
+GNSS_PORT         = get("GNSS", "port")
+GNSS_BAUD         = int(get("GNSS", "baud"))
+GNSS_NI_DEVICE    = get("GNSS", "ni_device")
+GNSS_PFI_TERMINAL = get("GNSS", "pfi_terminal")
+GNSS_COUNTER      = get("GNSS", "counter")
+
+# --- Unites geophone 3 axes (USB CDC-ACM) ---
+GEOPHONE3AXIS_VID      = int(get("Geophone3Axis", "vid"), 0)   # base 0 -> gere 0x....
+GEOPHONE3AXIS_PID      = int(get("Geophone3Axis", "pid"), 0)
+GEOPHONE3AXIS_DATA_DIR = get("Geophone3Axis", "data_dir")
+
 # --- Acquisition generale ---
 DATA_OUTPUT_DIR = get("General", "data_output_dir")

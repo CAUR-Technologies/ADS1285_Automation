@@ -149,6 +149,21 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "acq_min_cycles":            "4",
         "acq_max_duration_s":        "60.0",
     },
+    "GNSS": {
+        # Récepteur GNSS : port COM virtuel (trames NMEA GPGGA) pour l'heure UTC,
+        # + 1PPS câblé sur une entrée PFI de la carte NI pour l'alignement fin.
+        "port":          "COM9",       # VCP du récepteur GNSS (NMEA GPGGA)
+        "baud":          "9600",
+        "ni_device":     "Dev1",       # carte NI où arrive le 1PPS
+        "pfi_terminal":  "PFI0",       # entrée 1PPS (front montant)
+        "counter":       "ctr0",       # compteur NI pour la corrélation événement↔AI
+    },
+    "Geophone3Axis": {
+        # Unités géophone 3 axes (device USB composite MSD+CDC-ACM, firmware CAUR).
+        "vid":       "0x0483",
+        "pid":       "0x2545",
+        "data_dir":  "data/3axis",     # dossier de récupération des .dat (LS/GET)
+    },
     "General": {
         "data_output_dir": "data",
     },

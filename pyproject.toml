@@ -44,6 +44,10 @@ ni = [
 elf = [
     "pefile>=2023.2.7",
 ]
+# Lecture des .dat miniSEED des unités 3 axes (ObsPy embarque libmseed).
+mseed = [
+    "obspy>=1.4",
+]
 
 [project.urls]
 Homepage = "https://github.com/CAUR-Technologies/geophones-characterization-testbench"
