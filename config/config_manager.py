@@ -152,6 +152,10 @@ _DEFAULTS: dict[str, dict[str, str]] = {
     "GNSS": {
         # Récepteur GNSS : port COM virtuel (trames NMEA GPGGA) pour l'heure UTC,
         # + 1PPS câblé sur une entrée PFI de la carte NI pour l'alignement fin.
+        # Matériel validé (2026-08-03) : NovAtel ProPak-V3 (OEMV-3). NMEA via USB→VCP
+        # (LOG GPGGA ONTIME 1). 1PPS = câble strobe 01018519, pin 2 (fil BRUN) = PPS
+        # 3,3 V LVTTL ACTIF HAUT (front montant) -> PFI0 ; pin 9 (blanc/gris) = GND ->
+        # DGND. Actif haut via `PPSCONTROL ENABLE POSITIVE 1.0 1000` (=> Edge.RISING).
         "port":          "COM9",       # VCP du récepteur GNSS (NMEA GPGGA)
         "baud":          "9600",
         "ni_device":     "Dev1",       # carte NI où arrive le 1PPS
