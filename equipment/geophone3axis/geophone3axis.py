@@ -50,8 +50,11 @@ class Geophone3Axis:
     """Une unité géophone 3 axes : lien série CDC-ACM piloté par le line-protocol."""
 
     # Clés acceptées par le "CONFIG SET k=v ..." du firmware.
+    # geophone_model / geophone_freq_hz ajoutés (firmware develop, PR #146 5bff404) :
+    # ils alimentent l'en-tête .dat caurtech.geophone.{model,natural_frequency_hz}.
     CONFIG_KEYS = ("sample_rate_hz", "gain", "survey_id", "samples_by_record",
-                   "records_per_file", "max_pitch_deg", "max_roll_deg")
+                   "records_per_file", "max_pitch_deg", "max_roll_deg",
+                   "geophone_model", "geophone_freq_hz")
 
     def __init__(self, port: str, serial_number: str = ""):
         self.port = port

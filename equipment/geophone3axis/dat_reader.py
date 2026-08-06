@@ -25,6 +25,23 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+# Pleine échelle des unités 3 axes : ±VREF/2 = ±2,048 V à gain 1 (VREF = 4,096 V),
+# CONFIRMÉ vs datasheet ADS1285 (geophones-product/docs/bruit-plancher-v31.md).
+# ⚠️ DIFFÉRENT de l'ADS1285 EVM du banc (config full_scale_vpeak = 2,5 V) : ne PAS
+# réutiliser 2,5 V pour convertir les counts des .dat 3 axes. 1 LSB @ g1 ≈ 0,954 nV.
+UNIT3AXIS_FULLSCALE_VPEAK_G1 = 2.048
+
+
+def counts_to_volts(counts, gain: int = 1) -> np.ndarray:
+    """Convertit des counts int32 (ADC 24 bits étendus) d'une unité 3 axes en volts.
+
+    Pleine échelle ±2,048 V à gain 1, divisée par le gain PGA (le gain est dans
+    l'en-tête .dat `caurtech.adc_gain` / renvoyé par CONFIG?). Sert au calcul de
+    sensibilité 3 axes counts/(m/s) -> V/(m/s).
+    """
+    return (np.asarray(counts, dtype=np.float64)
+            * (UNIT3AXIS_FULLSCALE_VPEAK_G1 / float(gain)) / (2 ** 31))
+
 
 @dataclass
 class Channel3Axis:
