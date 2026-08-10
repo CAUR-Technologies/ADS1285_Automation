@@ -10,15 +10,18 @@ Format (cf. geophones-product `docs/data-format.md`) : **miniSEED v3 (FDSN)**,
   * horodatage en **nanosecondes depuis l'époque Unix (UTC)**, RTC disciplinée
     par le 1PPS GNSS.
 
-Backend Python : **ObsPy** (qui embarque libmseed) — le format étant du miniSEED
-standard, un lecteur conforme suffit. Le lecteur est **découplé** : `read_dat`
-renvoie une liste de `Channel3Axis` neutres, indépendante du backend, pour qu'on
-puisse basculer sur des bindings ctypes de libmseed (fork CAUR) sans toucher au
-reste du banc.
+Backend Python : **simplemseed** (pur Python, lit le miniSEED **v3** FDSN). ⚠️ NE
+PAS utiliser `obspy.read(format="MSEED")` : ObsPy ne gère que le miniSEED **v2** et
+échoue sur ces fichiers (magic `MS\\x03`, `julday out of bounds`). Le lecteur est
+**découplé** : `read_dat` renvoie une liste de `Channel3Axis` neutres, indépendante
+du backend, pour pouvoir basculer sur d'autres bindings libmseed sans toucher au banc.
 
-⚠️ **À valider contre un vrai `.dat`** : l'accès exact aux extra-headers
-`caurtech.*` via ObsPy (nom d'attribut) et le mapping voie↔trace sont marqués
-TODO ci-dessous — non testables sans fichier témoin ni matériel.
+VALIDÉ contre un vrai `.dat` (unité CG0-000008, 2026-08-10) :
+  * record d'en-tête (numSamples=0) → `caurtech.*` fichier (device_sn, geophone,
+    gps_position, adc_gain, software_version, tilt…) ;
+  * records de données → `caurtech.channel` = "1" | "2" | "3", samples int32 ;
+  * extra-headers lus via `record.eh` (dict) — `header.extraHeadersStr` reste vide
+    dans simplemseed 1.0.2, ne pas s'y fier.
 """
 
 from dataclasses import dataclass, field
@@ -59,59 +62,66 @@ class Channel3Axis:
         return self.start_time_ns + (np.arange(len(self.data)) * step).astype(np.int64)
 
 
-def _channel_of_trace(tr) -> str:
-    """Extrait la voie ADC d'une trace ObsPy.
+def _caurtech(rec) -> dict:
+    """Section `caurtech` de l'extra-header d'un record simplemseed (`record.eh`)."""
+    eh = getattr(rec, "eh", None)
+    if isinstance(eh, dict):
+        caur = eh.get("caurtech")
+        if isinstance(caur, dict):
+            return caur
+    return {}
 
-    TODO(valider sur vrai .dat) : le firmware met la voie dans l'extra-header
-    miniSEED v3 `caurtech.channel`. Selon la version d'ObsPy, ces extra-headers
-    sont exposés différemment (ex. `tr.stats.mseed.extra_headers`). À défaut, on
-    retombe sur le dernier caractère du code de canal (SID) ou l'ordre de trace.
+
+def _start_ns(rec) -> int:
+    """Instant du 1er échantillon d'un record → ns depuis l'époque Unix (UTC).
+
+    `record.starttime` est un `datetime` aware (précision µs, suffisante à 250 Hz) ;
+    le mseed3 porte la ns mais l'alignement banc se fait au 1PPS/lock-in, pas au ns.
     """
-    st = getattr(tr, "stats", None)
-    mseed = getattr(st, "mseed", None)
-    extra = getattr(mseed, "extra_headers", None) if mseed is not None else None
-    if isinstance(extra, dict):
-        caur = extra.get("caurtech", {})
-        if isinstance(caur, dict) and caur.get("channel"):
-            return str(caur["channel"])
-    # repli : dernier caractère du canal FDSN (SID) si présent
-    chan = getattr(st, "channel", "") if st is not None else ""
-    return chan[-1] if chan else ""
+    t0 = rec.starttime
+    return int(round(t0.timestamp() * 1e9))
 
 
 def read_dat(path: str) -> list[Channel3Axis]:
-    """Lit un `.dat` miniSEED → liste de `Channel3Axis` (une par voie présente).
+    """Lit un `.dat` miniSEED v3 → liste de `Channel3Axis` (une par voie présente).
 
-    Les segments d'une même voie sont concaténés dans l'ordre temporel.
+    Les records d'une même voie (`caurtech.channel`) sont concaténés dans l'ordre
+    temporel. Le record d'en-tête (numSamples=0) fournit les métadonnées fichier
+    (device_sn, geophone, gps_position, adc_gain…), recopiées dans `meta` de chaque
+    voie.
     """
     try:
-        import obspy
-    except ImportError as e:   # noqa: F841
+        import simplemseed
+    except ImportError:
         raise ImportError(
-            "Lecture des .dat 3 axes : ObsPy requis (embarque libmseed). "
-            "Installer via l'extra du projet : pip install .[mseed] "
-            "(ou basculer sur des bindings libmseed du fork CAUR)."
+            "Lecture des .dat 3 axes : simplemseed requis (miniSEED v3). "
+            "Installer : pip install .[mseed]  (ObsPy ne lit PAS le miniSEED v3)."
         )
 
-    stream = obspy.read(path, format="MSEED")
-    # Regrouper par voie (une unité 3 axes → voies "1","2","3")
-    by_ch: dict[str, list] = {}
-    for tr in stream:
-        ch = _channel_of_trace(tr) or str(len(by_ch) + 1)
-        by_ch.setdefault(ch, []).append(tr)
+    file_meta: dict = {}
+    by_ch: dict[str, list] = {}      # voie -> [(start_ns, sample_rate, samples)]
+    with open(path, "rb") as fp:
+        for rec in simplemseed.readMSeed3Records(fp):
+            caur = _caurtech(rec)
+            if rec.header.numSamples == 0:
+                # Record d'en-tête fichier : métadonnées globales.
+                file_meta.update(caur)
+                continue
+            ch = str(caur.get("channel") or (len(by_ch) + 1))
+            samples = np.asarray(rec.decompress(), dtype=np.int32)
+            by_ch.setdefault(ch, []).append(
+                (_start_ns(rec), float(rec.header.sampleRate), samples))
 
     channels: list[Channel3Axis] = []
-    for ch, traces in sorted(by_ch.items()):
-        traces.sort(key=lambda t: t.stats.starttime)
-        data = np.concatenate([t.data.astype(np.int32) for t in traces])
-        t0 = traces[0].stats.starttime
-        # UTCDateTime -> ns Unix
-        start_ns = int(round(t0.timestamp * 1e9))
+    for ch, segs in sorted(by_ch.items()):
+        segs.sort(key=lambda s: s[0])
+        data = np.concatenate([s[2] for s in segs])
+        meta = {"segments": len(segs), "file": file_meta}
         channels.append(Channel3Axis(
             channel_id=ch,
             data=data,
-            start_time_ns=start_ns,
-            sample_rate_hz=float(traces[0].stats.sampling_rate),
-            meta={"segments": len(traces)},
+            start_time_ns=segs[0][0],
+            sample_rate_hz=segs[0][1],
+            meta=meta,
         ))
     return channels

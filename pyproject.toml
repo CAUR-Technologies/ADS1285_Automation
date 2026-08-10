@@ -44,9 +44,10 @@ ni = [
 elf = [
     "pefile>=2023.2.7",
 ]
-# Lecture des .dat miniSEED des unités 3 axes (ObsPy embarque libmseed).
+# Lecture des .dat des unités 3 axes : miniSEED **v3** (FDSN, magic MS\x03).
+# simplemseed le lit (pur Python) ; ObsPy ne gère QUE le miniSEED v2 → inutilisable ici.
 mseed = [
-    "obspy>=1.4",
+    "simplemseed>=1.0",
 ]
 
 [project.urls]

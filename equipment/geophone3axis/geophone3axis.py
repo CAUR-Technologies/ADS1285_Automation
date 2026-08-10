@@ -126,13 +126,37 @@ class Geophone3Axis:
         return self.cfg
 
     # ---- configuration / contrôle acquisition --------------------------
+    # Le firmware réassemble les lignes CDC dans un buffer de 128 octets
+    # (`char line[128]`, cf. app/bsp/usb_iface) : au-delà de 127 caractères la
+    # ligne est tronquée et le reliquat réinterprété comme une commande erronée
+    # (observé : un "CONFIG SET" à 6 paires = 134 car. → `ERR unknown command`).
+    # On borne donc chaque ligne bien en-dessous.
+    _MAX_CONFIG_LINE = 100
+
     def set_config(self, fields: dict) -> list[str]:
-        """Applique seulement les champs fournis via un unique CONFIG SET."""
+        """Applique les champs fournis via un ou plusieurs CONFIG SET.
+
+        Découpé pour qu'aucune ligne CDC ne dépasse le buffer firmware (127 car.
+        utiles) : au-delà, le firmware tronque et rejette la commande.
+        """
         pairs = [f"{k}={fields[k]}" for k in self.CONFIG_KEYS
                  if fields.get(k) not in (None, "")]
         if not pairs:
             return ["ERR no fields"]
-        return self._exchange("CONFIG SET " + " ".join(pairs))
+        prefix = "CONFIG SET"
+        replies: list[str] = []
+        chunk: list[str] = []
+        length = len(prefix)
+        for p in pairs:
+            if chunk and length + 1 + len(p) > self._MAX_CONFIG_LINE:
+                replies += self._exchange(prefix + " " + " ".join(chunk))
+                chunk = []
+                length = len(prefix)
+            chunk.append(p)
+            length += 1 + len(p)
+        if chunk:
+            replies += self._exchange(prefix + " " + " ".join(chunk))
+        return replies
 
     def start(self) -> list[str]:
         """Démarre l'acquisition sur l'unité (enregistrement SD)."""
