@@ -108,7 +108,10 @@ class ThreeAxisApp(tk.Tk):
         fs = ttk.LabelFrame(left, text="4 · Balayage", padding=6)
         fs.pack(fill="x", pady=4)
         ttk.Label(fs, text="Fréquences (Hz) :").grid(row=0, column=0, sticky="w")
-        self.freqs = tk.StringVar(value="2,5,10,20")
+        # Balayage STANDARD des géophones (bande ANT 0,1–100 Hz), pour des résultats
+        # comparables à la calibration mono-géophone. Balayé HAUTE→BASSE (anti-butée) ;
+        # ⚠️ 0,1 Hz = grand déplacement (velocity-cappé ~10 mm) — surveiller la butée.
+        self.freqs = tk.StringVar(value="0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 70, 100")
         ttk.Entry(fs, textvariable=self.freqs, width=18).grid(row=0, column=1, sticky="w")
         ttk.Label(fs, text="Enveloppe :").grid(row=1, column=0, sticky="w")
         self.envelope = tk.StringVar(value="0.3")
@@ -305,14 +308,16 @@ class ThreeAxisApp(tk.Tk):
                     from config.settings import GNSS_PORT, GNSS_BAUD
                     gnss = Gnss(port=GNSS_PORT, baud=GNSS_BAUD); gnss.connect()
                     # Unité en enregistrement 250 Hz pendant le balayage (fichiers
-                    # courts pour qu'ils se FERMENT en cours de run → récupérables).
+                    # ~3 s pour qu'ils se FERMENT en cours de run → récupérables).
                     self.unit.set_config({"sample_rate_hz": 250, "samples_by_record": 250,
-                                          "records_per_file": 4, "survey_id": "BenchRun2"})
+                                          "records_per_file": 8, "survey_id": "BenchRun2"})
                 sess = Characterize3AxisSession(self.bench, self.unit, gnss, None,
                                                 GEOPHONE3AXIS_DATA_DIR)
-                sess.run_stream(freqs, excite=True, n_cycles=8,
+                # ≥10 cycles par palier (essentiel en BF : à 0,1 Hz, 10 cycles = 100 s),
+                # plafonné pour borner la durée totale. En STREAM (check) fenêtres courtes.
+                sess.run_stream(freqs, excite=True, n_cycles=10,
                                 min_duration_s=5.0 if rec_dat else 2.0,
-                                max_duration_s=8.0, on_point=on_point,
+                                max_duration_s=60.0 if rec_dat else 8.0, on_point=on_point,
                                 start_unit=rec_dat, stream=not rec_dat)
                 self._logln("Balayage STREAM terminé.")
                 if rec_dat:
