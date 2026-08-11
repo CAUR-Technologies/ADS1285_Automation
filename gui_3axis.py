@@ -108,10 +108,12 @@ class ThreeAxisApp(tk.Tk):
         fs = ttk.LabelFrame(left, text="4 · Balayage", padding=6)
         fs.pack(fill="x", pady=4)
         ttk.Label(fs, text="Fréquences (Hz) :").grid(row=0, column=0, sticky="w")
-        # Balayage STANDARD des géophones (bande ANT 0,1–100 Hz), pour des résultats
-        # comparables à la calibration mono-géophone. Balayé HAUTE→BASSE (anti-butée) ;
-        # ⚠️ 0,1 Hz = grand déplacement (velocity-cappé ~10 mm) — surveiller la butée.
-        self.freqs = tk.StringVar(value="0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 70, 100")
+        # Balayage par défaut 1–100 Hz (bande utile du géophone). Les BF < 1 Hz de la
+        # sweep mono-géophone sont RETIRÉES ici : à 0,1 Hz un palier prend ~4 min
+        # (fenêtres servo ~20 s + dwell 60 s), pour un signal minuscule (roll-off f²,
+        # SNR pourri) et un grand déplacement (risque butée). Les rajouter à la main
+        # si besoin. Balayé HAUTE→BASSE (anti-butée).
+        self.freqs = tk.StringVar(value="1, 2, 5, 10, 20, 50, 70, 100")
         ttk.Entry(fs, textvariable=self.freqs, width=18).grid(row=0, column=1, sticky="w")
         ttk.Label(fs, text="Enveloppe :").grid(row=1, column=0, sticky="w")
         self.envelope = tk.StringVar(value="0.3")
@@ -449,23 +451,30 @@ class ThreeAxisApp(tk.Tk):
         self._logln("⛔ ARRÊT demandé — excitation coupée.")
 
     def _on_close(self):
+        # Toujours : signaler l'arrêt + COUPER L'EXCITATION (sécurité).
         try:
             self._stop_event.set()
             if self.wav:
                 self.wav.disable_output()
         except Exception:
             pass
-        for d in (self.wav, self.aps, self.accel):
+        # Si un run est EN COURS, NE PAS déconnecter les instruments ici : le worker
+        # les utilise (acquisition NI/série en cours) → conflit thread principal ↔
+        # worker → GEL. On ferme juste la fenêtre ; les threads daemon meurent à la
+        # sortie du process et l'OS libère les ports. Déconnexion propre seulement
+        # si aucun run n'est actif.
+        if not self._busy:
+            for d in (self.wav, self.aps, self.accel):
+                try:
+                    if d:
+                        d.disconnect()
+                except Exception:
+                    pass
             try:
-                if d:
-                    d.disconnect()
+                if self.unit:
+                    self.unit.close()
             except Exception:
                 pass
-        try:
-            if self.unit:
-                self.unit.close()
-        except Exception:
-            pass
         self.destroy()
 
 
