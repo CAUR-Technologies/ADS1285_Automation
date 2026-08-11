@@ -37,8 +37,8 @@ from config.settings import (
     GNSS_PORT, GNSS_BAUD, GNSS_NI_DEVICE, GNSS_PFI_TERMINAL, GNSS_COUNTER,
 )
 
-# Pleine échelle unité 3 axes (±VREF/2 à gain 1) — pour convertir counts→V.
-FULLSCALE_VPK = 2.048
+# Pleine échelle unité 3 axes = ADS1285 : ±2,5 V à gain 1 (VREF/1,6384, datasheet).
+FULLSCALE_VPK = 2.5
 # Garde-fou : plafond Vpp prudent pour le banc 3 axes (bien sous le 5 V d'origine).
 SERVO_VPP_MAX_3AXIS = 1.5
 AXIS_MAP = "voie 1 = X · voie 2 = Y · voie 3 = Z"
