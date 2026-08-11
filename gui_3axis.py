@@ -305,7 +305,7 @@ class ThreeAxisApp(tk.Tk):
                     # Unité en enregistrement 250 Hz pendant le balayage (fichiers
                     # courts pour qu'ils se FERMENT en cours de run → récupérables).
                     self.unit.set_config({"sample_rate_hz": 250, "samples_by_record": 250,
-                                          "records_per_file": 15, "survey_id": "BenchRun"})
+                                          "records_per_file": 4, "survey_id": "BenchRun2"})
                 sess = Characterize3AxisSession(self.bench, self.unit, gnss, None,
                                                 GEOPHONE3AXIS_DATA_DIR)
                 sess.run_stream(freqs, excite=True, n_cycles=8,
@@ -316,7 +316,7 @@ class ThreeAxisApp(tk.Tk):
                 if rec_dat:
                     self._logln("Récupération .dat + corrélation 250 Hz (GPS)…")
                     dat = sess.correlate_dat_run(pts, lsb_v=lsb_v,
-                                                 survey_path="/survey-data/BenchRun")
+                                                 survey_path="/survey-data/BenchRun2")
                     self.after(0, self._log_dat_results, dat)
             except TestBenchAborted as e:
                 msg = str(e)
