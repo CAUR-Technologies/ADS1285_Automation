@@ -170,6 +170,61 @@ class Geophone3Axis:
         """Marqueur/synchronisation temporelle (SYNC) — pour l'alignement GNSS."""
         return self._exchange("SYNC")
 
+    def stream_geo(self, duration_s: float, rate_hz: int = 50,
+                   discard_warmup: int = 8):
+        """Collecte le flux géophone 3 voies (`STREAM ON GEO <hz>`) ~`duration_s`.
+
+        Voie de données ALTERNATIVE au `.dat`/GET (contourne le bug GET>2 Ko) : le
+        firmware pousse des lignes `G,c1,c2,c3` (int32, 3 voies synchrones). ⚠️ Le
+        débit est **plafonné à ~50 Hz** par le firmware (Nyquist 25 Hz) — OK pour la
+        bande 0,1–20 Hz. Les `discard_warmup` premières lignes (souvent `0,0,0` le
+        temps que l'offset ADC se pose) sont ôtées.
+
+        Retourne `(fs_reel, {"1":a1, "2":a2, "3":a3})` (ndarray int32), `fs_reel`
+        mesuré = n/durée réelle (à passer au lock-in `coherent_*`).
+        """
+        rows: list[tuple[int, int, int]] = []
+        t_first = t_last = None
+        with self._lock:
+            ser = self._open()
+            ser.reset_input_buffer()
+            ser.write(f"STREAM ON GEO {int(rate_hz)}\n".encode())
+            ser.flush()
+            seen = 0
+            start = time.time()
+            # Collecte jusqu'à duration_s de données UTILES (après warm-up).
+            while time.time() - start < duration_s + max(1.0, discard_warmup / 10.0):
+                line = ser.readline().decode(errors="replace").strip()
+                if not line.startswith("G,"):
+                    continue
+                parts = line.split(",")
+                if len(parts) != 4:
+                    continue
+                try:
+                    triple = (int(parts[1]), int(parts[2]), int(parts[3]))
+                except ValueError:
+                    continue
+                seen += 1
+                if seen <= discard_warmup:
+                    continue
+                now = time.time()
+                if t_first is None:
+                    t_first = now
+                t_last = now
+                rows.append(triple)
+                if t_first is not None and now - t_first >= duration_s:
+                    break
+            ser.write(b"STREAM OFF\n")
+            ser.flush()
+            time.sleep(0.2)
+            ser.reset_input_buffer()
+        import numpy as np
+        arr = np.array(rows, dtype=np.int32) if rows else np.empty((0, 3), np.int32)
+        span = (t_last - t_first) if (t_first and t_last and t_last > t_first) else duration_s
+        fs = (len(arr) - 1) / span if len(arr) > 1 and span > 0 else float(rate_hz)
+        chans = {"1": arr[:, 0], "2": arr[:, 1], "3": arr[:, 2]}
+        return fs, chans
+
     def command(self, cmd: str) -> list[str]:
         """Commande libre (CONFIG SET k=v ..., SYNC, ...)."""
         return self._exchange(cmd)

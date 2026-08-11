@@ -22,10 +22,15 @@ Voir [[../gnss/pps.py]] (temps GPS par échantillon) et [[dat_reader.py]].
 """
 
 import os
+import threading
 import time
+
+import numpy as np
 
 from equipment.geophone3axis.geophone3axis import Geophone3Axis
 from equipment.geophone3axis import dat_reader
+from equipment.dsp import (coherent_phasor, coherent_amplitude_peak,
+                           snr_db, thd_percent, G_ACCEL)
 
 
 class Characterize3AxisSession:
@@ -85,6 +90,138 @@ class Characterize3AxisSession:
         raise NotImplementedError(
             "run_excitation : acquisition accéléro continue + co-capture 1PPS à "
             "implémenter avec le matériel (GNSS + 1PPS sur PFI0). Voir docstring.")
+
+    # ---- 3bis : voie STREAM (contourne le bug firmware GET>2 Ko) -------
+    # Tant que GET est cassé pour les .dat soutenus, on caractérise sur le flux
+    # live `STREAM ON GEO` (3 voies, ~50 Hz → bande utile 0,1–20 Hz). L'excitation
+    # étant un sinus stationnaire, le lock-in mono-bin extrait l'amplitude de
+    # CHAQUE voie indépendamment : pas besoin d'alignement échantillon-exact, une
+    # simple co-acquisition sur la même fenêtre murale suffit pour la sensibilité
+    # (magnitude). Le temps GPS/1PPS reste requis pour la PHASE absolue et la voie
+    # .dat archivable — non nécessaire ici.
+
+    def _accel_fs_for(self, freq_hz: float, duration_s: float) -> int:
+        """Taux d'échantillonnage accéléro adapté à la fréquence (cf. testbench).
+
+        ~50×f (min 200 Hz), plafonné au taux NI et à ~50 k échantillons (sinon en
+        BF la fenêtre × plein taux ferait une acquisition DAQmx énorme)."""
+        accel = self.bench._accel
+        fs = int(min(max(freq_hz * 50.0, 200.0), accel.sample_rate))
+        if fs * duration_s > 50000:
+            fs = max(200, int(50000 / duration_s))
+        return fs
+
+    def measure_point_stream(self, freq_hz: float, n_cycles: int = 10,
+                             min_duration_s: float = 2.0,
+                             max_duration_s: float = 30.0,
+                             ref_channel: int | None = None,
+                             excite: bool = True) -> dict:
+        """Un point de fréquence en **voie STREAM** : excite le shaker (si `excite`),
+        co-acquiert l'accéléro de réf. + le flux géophone 3 voies sur la MÊME
+        fenêtre, puis lock-in à `freq_hz` → sensibilité par voie.
+
+        `excite=False` : ne pilote pas le shaker (test de plomberie / plancher de
+        bruit — les amplitudes ne sont alors que du bruit).
+
+        Retour : dict {freq_hz, accel_g, table_velocity_mps, channels:{ch:{...}}, …}.
+        Sensibilité par voie en counts/g ET counts/(m/s) (un géophone = capteur de
+        vitesse : `v = a/(2πf)`).
+        """
+        exc = None
+        if excite:
+            exc = self.bench.set_frequency_safe(freq_hz)
+            if exc.get("skipped"):
+                return {"freq_hz": freq_hz, "skipped": True,
+                        "note": exc.get("note", ""), "channels": {}}
+
+        # Fenêtre : au moins n_cycles, bornée [min,max] (en BF on allonge).
+        duration = max(min_duration_s,
+                       min(n_cycles / freq_hz if freq_hz > 0 else min_duration_s,
+                           max_duration_s))
+        accel_fs = self._accel_fs_for(freq_hz, duration)
+        ref_idx = self.bench._ref_channel if ref_channel is None else ref_channel
+
+        # Co-acquisition : accéléro dans un thread, flux géophone dans le principal,
+        # démarrés ~ensemble → même fenêtre d'excitation. join() garanti (sinon
+        # tâche NI orpheline → DAQmx -200557 aux points suivants).
+        holder: dict = {}
+
+        def _acq_accel():
+            try:
+                arr = self.bench._accel.acquire_seconds(duration, sample_rate=accel_fs)
+                holder["ref"] = arr[ref_idx] if getattr(arr, "ndim", 1) == 2 else arr
+            except Exception as e:   # noqa: BLE001
+                holder["err"] = e
+
+        th = threading.Thread(target=_acq_accel, daemon=True)
+        th.start()
+        try:
+            geo_fs, chans = self.unit.stream_geo(duration, rate_hz=50)
+        finally:
+            th.join()
+        if "err" in holder:
+            raise holder["err"]
+        ref = np.asarray(holder["ref"], dtype=np.float64)
+
+        # Lock-in accéléro → accélération table (g) et vitesse table (m/s).
+        sens_v_per_g = self.bench._accel.sensitivity_v_per_g
+        accel_g = coherent_amplitude_peak(ref, freq_hz, accel_fs) / sens_v_per_g
+        vel_mps = (accel_g * G_ACCEL) / (2.0 * np.pi * freq_hz) if freq_hz > 0 else float("nan")
+
+        # Lock-in par voie géophone → amplitude crête (counts) + phase + sensibilité.
+        channels: dict = {}
+        for ch, a in chans.items():
+            ph = coherent_phasor(a, freq_hz, geo_fs)
+            counts_peak = float(abs(ph))
+            channels[ch] = {
+                "counts_peak": counts_peak,
+                "phase_rad": float(np.angle(ph)),
+                "sens_counts_per_g": counts_peak / accel_g if accel_g > 0 else float("nan"),
+                "sens_counts_per_mps": counts_peak / vel_mps if vel_mps and vel_mps > 0 else float("nan"),
+                "snr_db": snr_db(a, freq_hz, geo_fs),
+                "n": int(len(a)),
+            }
+
+        return {
+            "freq_hz": freq_hz,
+            "skipped": False,
+            "accel_g": accel_g,
+            "table_velocity_mps": vel_mps,
+            "vpp": exc.get("vpp") if exc else None,
+            "servo_measured_g": exc.get("measured_g") if exc else None,
+            "accel_fs": accel_fs,
+            "geo_fs": geo_fs,
+            "accel_snr_db": snr_db(ref, freq_hz, accel_fs),
+            "accel_thd_percent": thd_percent(ref, freq_hz, accel_fs),
+            "channels": channels,
+        }
+
+    def run_stream(self, freqs, unit_config: dict | None = None,
+                   start_unit: bool = False, excite: bool = True,
+                   **point_kwargs) -> list[dict]:
+        """Balayage en voie STREAM : (config unité) → pour chaque fréquence,
+        `measure_point_stream` → liste de points. Coupe l'excitation à la fin.
+
+        `start_unit=True` déclenche aussi l'enregistrement .dat de l'unité en
+        parallèle (archive), mais la caractérisation se fait sur le STREAM.
+        """
+        if unit_config is not None:
+            self.prepare_unit(unit_config)
+        if start_unit:
+            self.start_unit()
+        points: list[dict] = []
+        try:
+            for f in freqs:
+                points.append(self.measure_point_stream(f, excite=excite, **point_kwargs))
+        finally:
+            if start_unit:
+                self.stop_unit()
+            if excite:
+                try:
+                    self.bench._safe_shutdown()
+                except Exception:   # noqa: BLE001
+                    pass
+        return points
 
     # ---- 5 : récupérer les enregistrements de l'unité ------------------
     def retrieve_files(self, survey_path: str = "") -> list[str]:
