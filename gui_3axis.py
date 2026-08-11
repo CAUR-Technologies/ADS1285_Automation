@@ -116,9 +116,11 @@ class ThreeAxisApp(tk.Tk):
         ttk.Label(fs, text="V max géo (m/s) :").grid(row=2, column=0, sticky="w")
         self.vmax = tk.StringVar(value="0.006")
         ttk.Entry(fs, textvariable=self.vmax, width=6).grid(row=2, column=1, sticky="w")
-        self.rec_dat = tk.BooleanVar(value=False)
-        ttk.Checkbutton(fs, text="Aussi .dat 250 Hz (SNR fiable)",
-                        variable=self.rec_dat).grid(row=3, column=0, columnspan=2, sticky="w")
+        # Mesure = .dat 250 Hz par DÉFAUT (SNR fiable, timing GPS). Le STREAM 50 Hz
+        # (sous-estime, masque la résonance) n'est plus qu'un check rapide optionnel.
+        self.quick_check = tk.BooleanVar(value=False)
+        ttk.Checkbutton(fs, text="Check rapide STREAM (sans enregistrement)",
+                        variable=self.quick_check).grid(row=3, column=0, columnspan=2, sticky="w")
         self.btn_zer = ttk.Button(fs, text="Centrer ZER", command=self._center_zer, state="disabled")
         self.btn_zer.grid(row=4, column=0, columnspan=2, sticky="ew", pady=2)
         self.btn_run = ttk.Button(fs, text="▶ LANCER le balayage", command=self._run_sweep, state="disabled")
@@ -287,7 +289,7 @@ class ThreeAxisApp(tk.Tk):
         lsb_v = FULLSCALE_VPK / gain / (2 ** 31)
         self._open_csv(gain)
 
-        rec_dat = self.rec_dat.get()
+        rec_dat = not self.quick_check.get()   # .dat = mesure par défaut ; STREAM = check
         pts: list = []
 
         def on_point(p):
@@ -317,7 +319,7 @@ class ThreeAxisApp(tk.Tk):
                     self._logln("Récupération .dat + corrélation 250 Hz (GPS)…")
                     dat = sess.correlate_dat_run(pts, lsb_v=lsb_v,
                                                  survey_path="/survey-data/BenchRun2")
-                    self.after(0, self._log_dat_results, dat)
+                    self.after(0, self._log_dat_results, dat, list(pts))
             except TestBenchAborted as e:
                 msg = str(e)
                 self._logln(f"⛔ ARRÊT / sécurité : {msg}")
@@ -339,23 +341,32 @@ class ThreeAxisApp(tk.Tk):
                 self.after(0, self._sweep_done)
         threading.Thread(target=work, daemon=True).start()
 
-    def _log_dat_results(self, dat):
-        """Affiche la sensibilité .dat 250 Hz (voie sur-axe = max counts) par fréquence."""
+    def _log_dat_results(self, dat, pts):
+        """Repeuple la table + le journal avec la sensibilité .dat 250 Hz (voie
+        sur-axe = max counts), timestamps GPS précis."""
         self._logln("=== Sensibilité .dat 250 Hz (timestamps GPS précis) ===")
-        freqs = sorted({f for byf in dat.values() for f in byf})
+        freqs = sorted({f for byf in dat.values() for f in byf}, reverse=True)
         if not freqs:
-            self._logln("  (aucun .dat exploitable — fichiers non fermés ou STREAM+record "
-                        "incompatibles ; à investiguer)")
+            self._logln("  (aucun .dat exploitable — fichiers non fermés / pas de fix GPS "
+                        "sur l'unité)")
             return
+        accel = {p["freq_hz"]: p.get("accel_g") for p in pts if not p.get("skipped")}
+        for it in self.tree.get_children():   # remplace les lignes accéléro par les résultats .dat
+            self.tree.delete(it)
         for f in freqs:
             best = None
             for cid, byf in dat.items():
                 d = byf.get(f)
                 if d and (best is None or d["counts_peak"] > best[1]["counts_peak"]):
                     best = (cid, d)
-            if best:
-                self._logln(f"  {f:>4g} Hz  voie {best[0]}  "
-                            f"S = {best[1]['sens_v_per_mps']:.1f} V/(m/s)  (n={best[1]['n']})")
+            if not best:
+                continue
+            cid, d = best
+            a = accel.get(f)
+            self.tree.insert("", "end", values=(
+                f"{f:g}", f"{a*1e3:.2f}" if a else "—", f"voie {cid}",
+                f"{d['sens_counts_per_mps']:.3g}", f"{d['sens_v_per_mps']:.1f}", f"n={d['n']}"))
+            self._logln(f"  {f:>4g} Hz  voie {cid}  S = {d['sens_v_per_mps']:.1f} V/(m/s)  (n={d['n']})")
 
     # ------- sauvegarde CSV -------
     def _open_csv(self, gain):
