@@ -116,13 +116,16 @@ class ThreeAxisApp(tk.Tk):
         ttk.Label(fs, text="V max géo (m/s) :").grid(row=2, column=0, sticky="w")
         self.vmax = tk.StringVar(value="0.006")
         ttk.Entry(fs, textvariable=self.vmax, width=6).grid(row=2, column=1, sticky="w")
+        self.rec_dat = tk.BooleanVar(value=False)
+        ttk.Checkbutton(fs, text="Aussi .dat 250 Hz (SNR fiable)",
+                        variable=self.rec_dat).grid(row=3, column=0, columnspan=2, sticky="w")
         self.btn_zer = ttk.Button(fs, text="Centrer ZER", command=self._center_zer, state="disabled")
-        self.btn_zer.grid(row=3, column=0, columnspan=2, sticky="ew", pady=2)
+        self.btn_zer.grid(row=4, column=0, columnspan=2, sticky="ew", pady=2)
         self.btn_run = ttk.Button(fs, text="▶ LANCER le balayage", command=self._run_sweep, state="disabled")
-        self.btn_run.grid(row=4, column=0, columnspan=2, sticky="ew", pady=2)
+        self.btn_run.grid(row=5, column=0, columnspan=2, sticky="ew", pady=2)
         self.btn_stop = tk.Button(fs, text="⛔ ARRÊT", command=self._stop, state="disabled",
                                   bg="#c0392b", fg="white", font=("Segoe UI", 12, "bold"), height=2)
-        self.btn_stop.grid(row=5, column=0, columnspan=2, sticky="ew", pady=4)
+        self.btn_stop.grid(row=6, column=0, columnspan=2, sticky="ew", pady=4)
 
         # -- Résultats --
         ttk.Label(right, text="Sensibilité par fréquence (voie sur-axe = max)").pack(anchor="w")
@@ -284,16 +287,37 @@ class ThreeAxisApp(tk.Tk):
         lsb_v = FULLSCALE_VPK / gain / (2 ** 31)
         self._open_csv(gain)
 
+        rec_dat = self.rec_dat.get()
+        pts: list = []
+
         def on_point(p):
+            pts.append(p)
             self.after(0, self._add_row, p, lsb_v)
 
         def work():
+            gnss = None
             try:
                 self.unit.set_config({"gain": gain})
-                sess = Characterize3AxisSession(self.bench, self.unit, None, None, GEOPHONE3AXIS_DATA_DIR)
-                sess.run_stream(freqs, excite=True, n_cycles=8, min_duration_s=2.0,
-                                max_duration_s=8.0, on_point=on_point)
-                self._logln("Balayage terminé.")
+                if rec_dat:
+                    from equipment.gnss.gnss import Gnss
+                    from config.settings import GNSS_PORT, GNSS_BAUD
+                    gnss = Gnss(port=GNSS_PORT, baud=GNSS_BAUD); gnss.connect()
+                    # Unité en enregistrement 250 Hz pendant le balayage (fichiers
+                    # courts pour qu'ils se FERMENT en cours de run → récupérables).
+                    self.unit.set_config({"sample_rate_hz": 250, "samples_by_record": 250,
+                                          "records_per_file": 15, "survey_id": "BenchRun"})
+                sess = Characterize3AxisSession(self.bench, self.unit, gnss, None,
+                                                GEOPHONE3AXIS_DATA_DIR)
+                sess.run_stream(freqs, excite=True, n_cycles=8,
+                                min_duration_s=5.0 if rec_dat else 2.0,
+                                max_duration_s=8.0, on_point=on_point,
+                                start_unit=rec_dat, stream=not rec_dat)
+                self._logln("Balayage STREAM terminé.")
+                if rec_dat:
+                    self._logln("Récupération .dat + corrélation 250 Hz (GPS)…")
+                    dat = sess.correlate_dat_run(pts, lsb_v=lsb_v,
+                                                 survey_path="/survey-data/BenchRun")
+                    self.after(0, self._log_dat_results, dat)
             except TestBenchAborted as e:
                 msg = str(e)
                 self._logln(f"⛔ ARRÊT / sécurité : {msg}")
@@ -303,13 +327,35 @@ class ThreeAxisApp(tk.Tk):
                 self._logln(f"Erreur : {msg}")
                 self.after(0, lambda m=msg: messagebox.showerror("Balayage", m))
             finally:
-                # Coupure garantie de l'excitation.
                 try:
                     self.wav.disable_output()
                 except Exception:
                     pass
+                if gnss is not None:
+                    try:
+                        gnss.disconnect()
+                    except Exception:
+                        pass
                 self.after(0, self._sweep_done)
         threading.Thread(target=work, daemon=True).start()
+
+    def _log_dat_results(self, dat):
+        """Affiche la sensibilité .dat 250 Hz (voie sur-axe = max counts) par fréquence."""
+        self._logln("=== Sensibilité .dat 250 Hz (timestamps GPS précis) ===")
+        freqs = sorted({f for byf in dat.values() for f in byf})
+        if not freqs:
+            self._logln("  (aucun .dat exploitable — fichiers non fermés ou STREAM+record "
+                        "incompatibles ; à investiguer)")
+            return
+        for f in freqs:
+            best = None
+            for cid, byf in dat.items():
+                d = byf.get(f)
+                if d and (best is None or d["counts_peak"] > best[1]["counts_peak"]):
+                    best = (cid, d)
+            if best:
+                self._logln(f"  {f:>4g} Hz  voie {best[0]}  "
+                            f"S = {best[1]['sens_v_per_mps']:.1f} V/(m/s)  (n={best[1]['n']})")
 
     # ------- sauvegarde CSV -------
     def _open_csv(self, gain):
@@ -337,7 +383,8 @@ class ThreeAxisApp(tk.Tk):
             self._csv.writerow([f"{p['freq_hz']:g}", "skipped", p.get("note", "")])
         else:
             ch = p["channels"]
-            on_id = max(ch.items(), key=lambda kv: kv[1]["counts_peak"])[0]
+            on_id = (max(ch.items(), key=lambda kv: kv[1]["counts_peak"])[0]
+                     if ch else "")   # run .dat : pas de voies STREAM
             row = [f"{p['freq_hz']:g}", f"{p['accel_g']:.6g}",
                    f"{p.get('table_velocity_mps', float('nan')):.6g}",
                    f"{p.get('geo_fs', 0):.2f}", on_id]
@@ -365,6 +412,10 @@ class ThreeAxisApp(tk.Tk):
                                                  p.get("note", "")[:18], "—", "—"))
             return
         ch = p["channels"]
+        if not ch:   # run .dat (stream=False) : pas de voies live → accéléro seul
+            self.tree.insert("", "end", values=(
+                f"{p['freq_hz']:g}", f"{p['accel_g']*1e3:.2f}", "→ .dat", "—", "—", "—"))
+            return
         on_id, on = max(ch.items(), key=lambda kv: kv[1]["counts_peak"])
         s_v = on["sens_counts_per_mps"] * lsb_v
         self.tree.insert("", "end", values=(

@@ -181,11 +181,75 @@ class Characterize3AxisSession:
             fs = max(200, int(50000 / duration_s))
         return fs
 
+    def _read_sod(self):
+        """Temps GPS courant (secondes-depuis-minuit) via le GNSS (None si absent /
+        pas de fix). Sert à BORNER en temps-GPS chaque palier de fréquence pour
+        corréler ensuite le `.dat` 250 Hz (horodaté GPS par le LC86G de l'unité)."""
+        if self.gnss is None:
+            return None
+        try:
+            self.gnss.read_fix(timeout=0.3)
+            return self.gnss.utc_sod()
+        except Exception:      # noqa: BLE001
+            return None
+
+    def correlate_dat_run(self, points, *, lsb_v: float, survey_path: str = "") -> dict:
+        """Après un balayage STREAM AVEC enregistrement `.dat` (`start_unit=True`) :
+        récupère les `.dat` (LS/GET) et **RE-mesure la sensibilité par voie à 250 Hz**
+        — timestamps GPS PRÉCIS de l'unité (pas le jitter du STREAM 50 Hz software).
+
+        Par palier, utilise la fenêtre temps-GPS (`sod_start`/`sod_end` capturés dans
+        `measure_point_stream`) et la vitesse table déjà mesurée (accéléro NI). Lock-in
+        du `.dat` via `coherent_phasor_at_times` sur les vrais temps GPS.
+
+        Retour : {channel_id: {freq_hz: {counts_peak, sens_counts_per_mps,
+                 sens_v_per_mps, n}}}.
+        """
+        from collections import defaultdict
+
+        self.retrieve_files(survey_path)   # LS + GET → self._pulled
+        segs = defaultdict(list)
+        for path in self._pulled:
+            for c in dat_reader.read_dat(path):
+                sod0 = (c.start_time_ns / 1e9) % 86400.0
+                sods = sod0 + np.arange(len(c.data)) / c.sample_rate_hz
+                segs[c.channel_id].append((np.asarray(c.data, dtype=np.float64), sods))
+
+        out = {cid: {} for cid in segs}
+        for p in points:
+            if p.get("skipped"):
+                continue
+            f = p["freq_hz"]
+            t0, t1 = p.get("sod_start"), p.get("sod_end")
+            vel = p.get("table_velocity_mps")
+            if t0 is None or t1 is None:
+                continue
+            if t1 < t0:
+                t0, t1 = t1, t0
+            for cid, seglist in segs.items():
+                xs, ts = [], []
+                for data, sods in seglist:
+                    m = (sods >= t0) & (sods <= t1)
+                    if m.any():
+                        xs.append(data[m]); ts.append(sods[m])
+                if not xs:
+                    continue
+                cp = abs(coherent_phasor_at_times(
+                    np.concatenate(xs), np.concatenate(ts), f))
+                good = vel is not None and np.isfinite(vel) and vel > 0
+                out[cid][f] = {
+                    "counts_peak": cp,
+                    "n": int(sum(len(x) for x in xs)),
+                    "sens_counts_per_mps": cp / vel if good else float("nan"),
+                    "sens_v_per_mps": cp * lsb_v / vel if good else float("nan"),
+                }
+        return out
+
     def measure_point_stream(self, freq_hz: float, n_cycles: int = 10,
                              min_duration_s: float = 2.0,
                              max_duration_s: float = 30.0,
                              ref_channel: int | None = None,
-                             excite: bool = True) -> dict:
+                             excite: bool = True, stream: bool = True) -> dict:
         """Un point de fréquence en **voie STREAM** : excite le shaker (si `excite`),
         co-acquiert l'accéléro de réf. + le flux géophone 3 voies sur la MÊME
         fenêtre, puis lock-in à `freq_hz` → sensibilité par voie.
@@ -223,12 +287,21 @@ class Characterize3AxisSession:
             except Exception as e:   # noqa: BLE001
                 holder["err"] = e
 
+        sod_start = self._read_sod()   # borne temps-GPS (pour corréler le .dat 250 Hz)
         th = threading.Thread(target=_acq_accel, daemon=True)
         th.start()
         try:
-            geo_fs, chans = self.unit.stream_geo(duration, rate_hz=50)
+            if stream:
+                geo_fs, chans = self.unit.stream_geo(duration, rate_hz=50)
+            else:
+                # Chemin .dat : PAS de STREAM (il gêne l'enregistrement SD → recording
+                # corrompu). On laisse juste le palier durer pendant que l'unité
+                # enregistre son .dat, l'accéléro mesure la référence en parallèle.
+                time.sleep(duration)
+                geo_fs, chans = 50.0, {}
         finally:
             th.join()
+        sod_end = self._read_sod()
         if "err" in holder:
             raise holder["err"]
         ref = np.asarray(holder["ref"], dtype=np.float64)
@@ -257,6 +330,8 @@ class Characterize3AxisSession:
             "skipped": False,
             "accel_g": accel_g,
             "table_velocity_mps": vel_mps,
+            "sod_start": sod_start,
+            "sod_end": sod_end,
             "vpp": exc.get("vpp") if exc else None,
             "servo_measured_g": exc.get("measured_g") if exc else None,
             "accel_fs": accel_fs,
