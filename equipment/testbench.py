@@ -315,6 +315,13 @@ class TestBench:
 
         Returns (vpp_final, accel_mesurée_g).
         """
+        # Sécurité anti-emballement : si l'accéléro lit ~0 alors qu'on excite déjà
+        # à MUTE_ABORT_VPP, c'est une FAUTE CAPTEUR (accéléro débranché / tâche NI
+        # corrompue / mauvais canal), PAS un simple "pas assez de drive". Sans ce
+        # garde-fou, le servo rampe le Vpp jusqu'à vpp_max (×gain ampli) et projette
+        # le shaker violemment alors que le capteur ne voit rien (incident 2026-08-11).
+        SENSOR_MUTE_FLOOR_G = 1e-6   # sous ce niveau = aucun signal exploitable
+        MUTE_ABORT_VPP = 0.5         # Vpp au-delà duquel un capteur muet = faute
         vpp = self._servo_start_vpp
         applied = self._servo_start_vpp
         measured = 0.0
@@ -326,9 +333,19 @@ class TestBench:
             self._check_overtravel()
             measured = self._accel.measure_acceleration_g(
                 freq_hz, ref_channel=self._ref_channel)
-            if measured <= 1e-9:
-                self._log(f"[banc]   iter{i}: aucun signal, Vpp {applied:.4f}→{applied*2:.4f}")
-                vpp = applied * 2.0
+            if measured <= SENSOR_MUTE_FLOOR_G:
+                if applied >= MUTE_ABORT_VPP - 1e-9:
+                    self._safe_shutdown()   # coupe l'excitation AVANT de lever
+                    raise TestBenchAborted(
+                        f"FAUTE CAPTEUR : accéléro de référence muet "
+                        f"({measured:.2e} g) à {applied:.3f} Vpp / {freq_hz} Hz — "
+                        f"servo STOPPÉ pour éviter l'emballement du shaker. "
+                        f"Vérifier la connexion/lecture de l'accéléromètre (canal "
+                        f"ai{self._ref_channel}) avant de reprendre.")
+                nxt = min(applied * 2.0, MUTE_ABORT_VPP)
+                self._log(f"[banc]   iter{i}: aucun signal, Vpp {applied:.4f}→{nxt:.4f} "
+                          f"(plafond faute {MUTE_ABORT_VPP} V)")
+                vpp = nxt
                 continue
             err = (target_g - measured) / target_g
             self._log(f"[banc]   iter{i}: Vpp={applied:.4f} → {measured:.5f} g "
@@ -349,6 +366,44 @@ class TestBench:
                 return applied, measured
         self._log(f"[banc]   servo non convergé après {self._servo_max_iter} iters")
         return applied, measured
+
+    def check_reference_alive(self, duration_s: float = 1.0,
+                              min_std_v: float = 1e-5,
+                              max_abs_v: float = 9.5) -> tuple[float, float]:
+        """Vérifie que l'accéléromètre de référence produit une lecture PLAUSIBLE
+        avant toute excitation. Anti-emballement : si le capteur est muet
+        (débranché, mauvais canal, tâche NI corrompue), le servo pourrait ramper
+        le Vpp jusqu'au plafond et projeter le shaker (incident 2026-08-11).
+
+        Lève `TestBenchAborted` si la lecture est non finie, quasi constante
+        (écart-type ≈ 0 → capteur muet) ou saturée. Retourne (std_v, mean_v).
+        À appeler AU REPOS (shaker non excité), au début d'une séquence.
+        """
+        import numpy as np
+        arr = self._accel.acquire_seconds(duration_s)
+        ref = arr[self._ref_channel] if getattr(arr, "ndim", 1) == 2 else arr
+        ref = np.asarray(ref, dtype=np.float64)
+        std = float(np.std(ref)) if ref.size else 0.0
+        mx = float(np.max(np.abs(ref))) if ref.size else 0.0
+        if ref.size == 0 or not np.isfinite(ref).all():
+            self._safe_shutdown()
+            raise TestBenchAborted(
+                f"Accéléro de référence : lecture vide/non finie (canal "
+                f"ai{self._ref_channel}) — tâche NI ? Excitation refusée.")
+        if std < min_std_v:
+            self._safe_shutdown()
+            raise TestBenchAborted(
+                f"Accéléro de référence MUET (écart-type {std:.2e} V ≈ 0, canal "
+                f"ai{self._ref_channel}) — capteur débranché / tâche NI corrompue. "
+                f"Excitation refusée (anti-emballement).")
+        if mx >= max_abs_v:
+            self._safe_shutdown()
+            raise TestBenchAborted(
+                f"Accéléro de référence SATURÉ (|{mx:.1f}| V ≥ {max_abs_v}) sur "
+                f"ai{self._ref_channel} — vérifier gain/branchement. Excitation refusée.")
+        self._log(f"[banc] accéléro OK (ai{self._ref_channel}: bruit {std*1e3:.2f} mV RMS, "
+                  f"|max| {mx:.3f} V)")
+        return std, float(np.mean(ref))
 
     def set_frequency_safe(self, freq_hz: float,
                            target_g: float | None = None) -> dict:

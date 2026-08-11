@@ -36,6 +36,28 @@ def coherent_amplitude_peak(signal, freq_hz: float, fs: float) -> float:
     return float(abs(coherent_phasor(signal, freq_hz, fs)))
 
 
+def coherent_phasor_at_times(signal, times_s, freq_hz: float) -> complex:
+    """
+    Phaseur cohérent d'une sinusoïde à freq_hz échantillonnée à des instants
+    ARBITRAIRES `times_s` (pas forcément uniformes), en secondes.
+
+    Projette sur exp(-j·2π·f·t) avec t = temps **absolu** (au lieu de l'indice
+    n/fs). Donne une phase dans un **référentiel temporel commun** (ex. le temps
+    GPS) → les phases de deux signaux acquis sur des horloges DIFFÉRENTES mais
+    datés dans la même base GPS deviennent directement comparables (corrélation
+    unité 3 axes ↔ accéléromètre de référence).
+
+        X = Σ (x - x̄)·exp(-j·2π·f·t) ;  phaseur = 2·X/N
+    (module = amplitude crête, argument = phase à t = 0 de la base de temps.)
+    """
+    x = np.asarray(signal, dtype=np.float64)
+    t = np.asarray(times_s, dtype=np.float64)
+    if x.size == 0 or x.size != t.size:
+        return 0j
+    basis = np.exp(-2j * np.pi * freq_hz * t)
+    return complex(2.0 * np.dot(x - x.mean(), basis) / x.size)
+
+
 def rms(signal) -> float:
     """Valeur efficace (RMS) du signal, composante continue retirée."""
     x = np.asarray(signal, dtype=np.float64)

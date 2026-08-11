@@ -30,7 +30,7 @@ import numpy as np
 from equipment.geophone3axis.geophone3axis import Geophone3Axis
 from equipment.geophone3axis import dat_reader
 from equipment.dsp import (coherent_phasor, coherent_amplitude_peak,
-                           snr_db, thd_percent, G_ACCEL)
+                           coherent_phasor_at_times, snr_db, thd_percent, G_ACCEL)
 
 
 class Characterize3AxisSession:
@@ -68,28 +68,98 @@ class Characterize3AxisSession:
         self.unit.stop()
 
     # ---- 3 : excitation + acquisition co-synchronisée ------------------
-    def run_excitation(self, freqs, **sweep_kwargs) -> dict:
-        """Excite le shaker pendant que l'unité enregistre, en capturant
-        l'accéléro de référence ET le 1PPS pour l'horodatage GPS.
+    def run_excitation(self, freqs, *, dwell_s: float = 8.0,
+                       ai_rate: int = 2000, sens_v_per_g: float | None = None) -> dict:
+        """CHEMIN .dat + GPS — balaye le shaker en enregistrant l'accéléromètre de
+        référence **EN CONTINU**, co-synchronisé au **1PPS ProPak (temps GPS)** via
+        `Pps1ppsMonitor`, pendant que l'unité enregistre ses `.dat`. Chaque palier
+        de fréquence est daté en temps GPS (sod) → `schedule` pour `correlate()`.
 
-        TODO(matériel) : aujourd'hui l'accéléro (`equipment/accelerometer`) fait
-        des fenêtres FINIES par point de fréquence. Pour cette session il faut une
-        **acquisition continue** de l'accéléro pendant tout le balayage, avec le
-        `Pps1ppsMonitor` armé sur la même horloge (ai/SampleClock) — puis relever,
-        pour chaque échantillon accéléro, son temps GPS via
-        `equipment.gnss.pps.sample_to_gps_sod`. À implémenter quand le GNSS + le
-        1PPS (PFI0) sont câblés et testables.
+        L'accéléro tourne en acquisition **continue** (il génère `ai/SampleClock`,
+        que le compteur PPS latche à chaque front 1PPS sur PFI0). On draine
+        périodiquement les échantillons AI et les fronts 1PPS, et on étiquette
+        chaque front avec la seconde UTC du GNSS (GPGGA) → temps GPS par échantillon.
 
-        Squelette de la logique visée :
-            self.pps.start()                       # armer le compteur 1PPS
-            # ... lancer une acquisition accéléro CONTINUE + le balayage shaker ...
-            edges = self.pps.read_edges()          # indices AI des fronts 1PPS
-            utc = self.gnss.read_fix()             # seconde UTC de référence
-            self.pps.stop()
+        Retour : {ref_signal (V), ref_sods (s, temps GPS/échantillon), schedule
+                 (avec sod_start/sod_end par palier), ai_rate, sens_v_per_g}.
+
+        ⚠️ Matériel complet requis (accéléro NI + 1PPS ProPak sur PFI0 + GNSS NMEA)
+        et unité en cours d'enregistrement (`start_unit`). Balaye HAUTE→BASSE
+        (sécurité anti-butée). À VALIDER au banc — la corrélation, elle, est testée.
         """
-        raise NotImplementedError(
-            "run_excitation : acquisition accéléro continue + co-capture 1PPS à "
-            "implémenter avec le matériel (GNSS + 1PPS sur PFI0). Voir docstring.")
+        import time as _t
+        import numpy as _np
+        import nidaqmx
+        from nidaqmx.constants import (AcquisitionType, TerminalConfiguration,
+                                       READ_ALL_AVAILABLE)
+        from equipment.gnss.pps import sample_to_gps_sod
+
+        accel = self.bench._accel
+        ref_idx = self.bench._ref_channel
+        ch_name = accel._channels[ref_idx]
+        if sens_v_per_g is None:
+            sens_v_per_g = accel.sensitivity_v_per_g
+
+        ai = nidaqmx.Task()
+        ai.ai_channels.add_ai_voltage_chan(
+            f"{accel._device}/{ch_name}",
+            terminal_config=TerminalConfiguration.RSE, min_val=-10.0, max_val=10.0)
+        ai.timing.cfg_samp_clk_timing(rate=ai_rate, sample_mode=AcquisitionType.CONTINUOUS)
+
+        ref: list = []                       # échantillons volts (continu)
+        edge_idx: list = []                  # indices AI des fronts 1PPS
+        edge_sod: list = []                  # seconde UTC entière de chaque front
+        schedule: list = []
+
+        def _drain():
+            data = ai.read(number_of_samples_per_channel=READ_ALL_AVAILABLE)
+            if data:
+                ref.extend(data if isinstance(data, list) else [data])
+            for s in self.pps.read_edges():
+                if self.gnss is not None:
+                    self.gnss.read_fix(timeout=0.2)
+                    sod = self.gnss.utc_sod()
+                    if sod is not None:
+                        edge_idx.append(int(s))
+                        edge_sod.append(round(sod))   # le front 1PPS = frontière de seconde
+
+        self.pps.start()
+        ai.start()
+        try:
+            _t.sleep(0.5); _drain()          # amorçage
+            for f in sorted(freqs, reverse=True):    # HAUTE→BASSE (anti-butée)
+                self.bench._check_stop()
+                exc = self.bench.set_frequency_safe(f)
+                if exc.get("skipped"):
+                    continue
+                _drain(); i0 = len(ref)
+                _t.sleep(dwell_s)
+                _drain(); i1 = len(ref)
+                schedule.append({"freq_hz": f, "sample_start": i0, "sample_end": i1})
+        finally:
+            try:
+                self.bench._safe_shutdown()
+            except Exception:               # noqa: BLE001
+                pass
+            _drain()
+            self.pps.stop()
+            ai.stop(); ai.close()
+
+        n = len(ref)
+        if edge_idx and edge_sod:
+            ref_sods = _np.array(
+                [sample_to_gps_sod(i, edge_idx, edge_sod, ai_rate) for i in range(n)],
+                dtype=float)
+        else:
+            # Pas de 1PPS/GNSS exploitable → base de temps locale (magnitude seule).
+            ref_sods = _np.arange(n) / float(ai_rate)
+        for seg in schedule:
+            a = min(seg["sample_start"], n - 1) if n else 0
+            b = min(seg["sample_end"] - 1, n - 1) if n else 0
+            seg["sod_start"] = float(ref_sods[a]) if n else 0.0
+            seg["sod_end"] = float(ref_sods[b]) if n else 0.0
+        return {"ref_signal": _np.asarray(ref, dtype=float), "ref_sods": ref_sods,
+                "schedule": schedule, "ai_rate": ai_rate, "sens_v_per_g": sens_v_per_g}
 
     # ---- 3bis : voie STREAM (contourne le bug firmware GET>2 Ko) -------
     # Tant que GET est cassé pour les .dat soutenus, on caractérise sur le flux
@@ -198,7 +268,7 @@ class Characterize3AxisSession:
 
     def run_stream(self, freqs, unit_config: dict | None = None,
                    start_unit: bool = False, excite: bool = True,
-                   **point_kwargs) -> list[dict]:
+                   on_point=None, **point_kwargs) -> list[dict]:
         """Balayage en voie STREAM : (config unité) → pour chaque fréquence,
         `measure_point_stream` → liste de points. Coupe l'excitation à la fin.
 
@@ -207,12 +277,28 @@ class Characterize3AxisSession:
         """
         if unit_config is not None:
             self.prepare_unit(unit_config)
+        # Sécurité : vérifier l'accéléro AVANT toute excitation (anti-emballement).
+        if excite:
+            self.bench.check_reference_alive()
         if start_unit:
             self.start_unit()
         points: list[dict] = []
+        # SÉCURITÉ : à l'excitation, balayer de la HAUTE vers la BASSE fréquence.
+        # Le déplacement croît en 1/f² ; si un défaut (accéléro qui ne capte pas,
+        # ampli muet, ZER non centré) fait ramper le servo, il se manifeste d'abord
+        # aux HAUTES fréquences (petit déplacement) et l'abandon stoppe le balayage
+        # AVANT d'atteindre les basses fréquences (grand déplacement → butée).
+        # incident 2026-08-11 : 2 Hz balayé en premier a projeté l'armature en butée.
+        order = sorted(freqs, reverse=True) if excite else list(freqs)
         try:
-            for f in freqs:
-                points.append(self.measure_point_stream(f, excite=excite, **point_kwargs))
+            for f in order:
+                # Respecte le bouton « Arrêter » du GUI (stop_event du bench) entre
+                # les points ; l'excitation elle-même est déjà interruptible (servo).
+                self.bench._check_stop()
+                pt = self.measure_point_stream(f, excite=excite, **point_kwargs)
+                points.append(pt)
+                if on_point is not None:
+                    on_point(pt)
         finally:
             if start_unit:
                 self.stop_unit()
@@ -231,40 +317,105 @@ class Characterize3AxisSession:
         return self._pulled
 
     # ---- 6 : corrélation .dat <-> accéléro de référence ----------------
-    def correlate(self, ref_accel_g, ref_sample_gps_ns) -> dict:
-        """Corrèle les 3 voies de l'unité (.dat) avec l'accéléro de référence.
+    def correlate(self, schedule, ref_signal, ref_sods, *,
+                  sens_v_per_g, lsb_v, unit_channels=None) -> dict:
+        """CORRÉLATION TEMPS-GPS COMPLÈTE — aligne les voies de l'unité (`.dat`,
+        horodatées en temps GPS par le LC86G) avec l'accéléromètre de référence
+        (échantillonné NI, daté en temps GPS via le 1PPS ProPak sur PFI0), sur la
+        **base GPS commune**, puis lock-in par voie par fréquence → sensibilité
+        ET phase.
 
-        ref_accel_g        : échantillons accéléro de référence (g).
-        ref_sample_gps_ns  : temps GPS (ns Unix) de chaque échantillon accéléro
-                             (issu du 1PPS + GPGGA, cf. gnss.pps).
+        Les deux capteurs ont des horloges DIFFÉRENTES ; on ne peut pas aligner
+        par indice d'échantillon. On date chaque échantillon en **temps GPS
+        (secondes-depuis-minuit UTC)** et on projette sur `exp(-j2πf·t_gps)`
+        (`coherent_phasor_at_times`) → les phases sont dans le même référentiel.
 
-        TODO(vrai .dat) : pour chaque .dat récupéré,
-            channels = dat_reader.read_dat(path)      # 3 Channel3Axis (ns Unix)
-            # aligner chaque voie sur ref via les temps GPS (ré-échantillonnage),
-            # puis, par fréquence d'excitation, lock-in des deux signaux et
-            # sensibilité S_v = counts_crête / a_table [counts/(m/s)] par voie.
-        Renvoie un dict {channel_id: {freq: sensibilité}} (à définir).
+        Paramètres
+        ----------
+        schedule     : liste de dict {"freq_hz", "sod_start", "sod_end"} — fenêtre
+                       temps-GPS de chaque palier de fréquence du balayage.
+        ref_signal   : échantillons accéléro de référence (VOLTS).
+        ref_sods     : temps GPS (sod) de chaque échantillon de `ref_signal`
+                       (via `Pps1ppsMonitor` + `gnss.pps.sample_to_gps_sod`).
+        sens_v_per_g : sensibilité chaîne accéléro (V/g).
+        lsb_v        : volts par count de l'ADC unité (2,048/gain / 2³¹).
+        unit_channels: liste de `Channel3Axis` (défaut : lues des `.dat` de
+                       `self._pulled`). Plusieurs segments par voie tolérés.
+
+        Retour : {channel_id: {freq_hz: {sens_counts_per_mps, sens_v_per_mps,
+                 phase_deg, accel_g, table_velocity_mps, n_ref, n_unit}}}.
         """
-        results = {}
-        for path in self._pulled:
-            channels = dat_reader.read_dat(path)   # noqa: F841 (usage à venir)
-            # TODO : alignement temps GPS + lock-in par fréquence par voie.
-            raise NotImplementedError(
-                "correlate : alignement GPS + lock-in par voie à implémenter "
-                "sur un vrai .dat (parse OK via dat_reader).")
+        from collections import defaultdict
+
+        if unit_channels is None:
+            unit_channels = []
+            for path in self._pulled:
+                unit_channels.extend(dat_reader.read_dat(path))
+        ref_signal = np.asarray(ref_signal, dtype=np.float64)
+        ref_sods = np.asarray(ref_sods, dtype=np.float64)
+
+        # Segments groupés par voie, chacun daté en temps GPS (sod). start_time_ns
+        # = ns depuis l'époque Unix (UTC) → sod = (ns/1e9) modulo 86400 s.
+        segs = defaultdict(list)   # channel_id -> [(data, sods)]
+        for c in unit_channels:
+            sod0 = (c.start_time_ns / 1e9) % 86400.0
+            sods = sod0 + np.arange(len(c.data)) / c.sample_rate_hz
+            segs[c.channel_id].append((np.asarray(c.data, dtype=np.float64), sods))
+
+        results = {cid: {} for cid in segs}
+        for seg in schedule:
+            f = float(seg["freq_hz"])
+            t0, t1 = float(seg["sod_start"]), float(seg["sod_end"])
+            # Référence : phaseur → accélération table (g) → vitesse table (m/s).
+            m = (ref_sods >= t0) & (ref_sods <= t1)
+            ref_ph = coherent_phasor_at_times(ref_signal[m], ref_sods[m], f)
+            accel_g = abs(ref_ph) / sens_v_per_g if sens_v_per_g else float("nan")
+            vel = (accel_g * G_ACCEL) / (2.0 * np.pi * f) if f > 0 else float("nan")
+            for cid, seglist in segs.items():
+                xs, ts = [], []
+                for data, sods in seglist:
+                    mu = (sods >= t0) & (sods <= t1)
+                    if mu.any():
+                        xs.append(data[mu]); ts.append(sods[mu])
+                if xs:
+                    unit_ph = coherent_phasor_at_times(
+                        np.concatenate(xs), np.concatenate(ts), f)
+                    n_unit = int(sum(len(x) for x in xs))
+                else:
+                    unit_ph, n_unit = 0j, 0
+                counts_pk = abs(unit_ph)
+                dphi = (np.angle(unit_ph) - np.angle(ref_ph) + np.pi) % (2 * np.pi) - np.pi
+                good = vel is not None and np.isfinite(vel) and vel > 0
+                results[cid][f] = {
+                    "sens_counts_per_mps": counts_pk / vel if good else float("nan"),
+                    "sens_v_per_mps": counts_pk * lsb_v / vel if good else float("nan"),
+                    "phase_deg": float(np.degrees(dphi)),
+                    "accel_g": accel_g,
+                    "table_velocity_mps": vel,
+                    "n_ref": int(m.sum()),
+                    "n_unit": n_unit,
+                }
         return results
 
     # ---- enchaînement complet -----------------------------------------
-    def run(self, unit_config: dict, freqs, survey_path: str = "",
-            **sweep_kwargs) -> dict:
-        """Enchaîne 1→6. (run_excitation/correlate lèvent NotImplementedError
-        tant que le matériel n'est pas là — le squelette pose le flux.)"""
+    def run(self, unit_config: dict, freqs, survey_path: str = "", *,
+            gain: int = 1, **exc_kwargs) -> dict:
+        """CHEMIN .dat + GPS COMPLET (1→6) : configure l'unité → START (+SYNC) →
+        excite le shaker en co-acquérant l'accéléro de réf. daté en temps GPS →
+        STOP → récupère les `.dat` (LS/GET, débloqué par le fix firmware) →
+        corrèle (alignement GPS + lock-in par voie → sensibilité + phase).
+
+        `gain` = gain ADC de l'unité (conversion counts→V). `exc_kwargs` passés à
+        `run_excitation` (dwell_s, ai_rate…). Nécessite le matériel complet câblé.
+        """
         cfg = self.prepare_unit(unit_config)
         self.start_unit()
         try:
-            acq = self.run_excitation(freqs, **sweep_kwargs)
+            acq = self.run_excitation(freqs, **exc_kwargs)
         finally:
             self.stop_unit()
         files = self.retrieve_files(survey_path)
-        corr = self.correlate(acq["ref_accel_g"], acq["ref_sample_gps_ns"])
-        return {"config": cfg, "files": files, "sensitivity": corr}
+        lsb_v = 2.048 / gain / (2 ** 31)
+        corr = self.correlate(acq["schedule"], acq["ref_signal"], acq["ref_sods"],
+                              sens_v_per_g=acq["sens_v_per_g"], lsb_v=lsb_v)
+        return {"config": cfg, "files": files, "sensitivity": corr, "acq": acq}

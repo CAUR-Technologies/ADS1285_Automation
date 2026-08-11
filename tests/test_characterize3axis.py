@@ -85,6 +85,42 @@ def test_skipped_point_out_of_envelope():
     assert r["skipped"] and r["channels"] == {}
 
 
+def test_correlate_gps_aligned():
+    """Corrélation TEMPS-GPS : sensibilité ET phase récupérées sur deux signaux
+    datés en temps GPS mais échantillonnés sur des HORLOGES DIFFÉRENTES (fs et
+    instants de départ distincts) — ce que fait le banc (unité .dat vs accéléro NI)."""
+    from equipment.geophone3axis.dat_reader import Channel3Axis
+    F, SENS_V_PER_G, G = 8.0, 0.8, 9.80665
+    lsb_v = 2.048 / 1 / (2 ** 31)
+    ACCEL_G = 0.05
+    vel = ACCEL_G * G / (2 * np.pi * F)
+    COUNTS_PK = 1.5e6
+    PH_UNIT, PH_REF = np.deg2rad(30.0), np.deg2rad(-10.0)   # phases vs GPS t=0
+
+    sod0 = 45000.0
+    t_end = sod0 + 10.0
+    # Référence NI : fs 500 Hz, départ sod0.
+    tr = sod0 + np.arange(int((t_end - sod0) * 500.0)) / 500.0
+    ref = ACCEL_G * SENS_V_PER_G * np.sin(2 * np.pi * F * tr + PH_REF)   # volts
+    # Unité : fs 250 Hz, départ décalé de 0,137 s (horloge différente).
+    u0 = sod0 + 0.137
+    tu = u0 + np.arange(int((t_end - u0) * 250.0)) / 250.0
+    counts = (COUNTS_PK * np.sin(2 * np.pi * F * tu + PH_UNIT)).astype(np.int64)
+    ch = Channel3Axis(channel_id="1", data=counts,
+                      start_time_ns=int(u0 * 1e9), sample_rate_hz=250.0)
+
+    sess = Characterize3AxisSession.__new__(Characterize3AxisSession)  # sans matériel
+    schedule = [{"freq_hz": F, "sod_start": sod0 + 0.5, "sod_end": t_end - 0.5}]
+    res = sess.correlate(schedule, ref, tr, sens_v_per_g=SENS_V_PER_G, lsb_v=lsb_v,
+                         unit_channels=[ch])
+    r = res["1"][F]
+    assert approx(r["accel_g"], ACCEL_G, tol=0.03), r["accel_g"]
+    assert approx(r["sens_counts_per_mps"], COUNTS_PK / vel, tol=0.03)
+    assert approx(r["sens_v_per_mps"], COUNTS_PK * lsb_v / vel, tol=0.03)
+    exp_phase = np.rad2deg(PH_UNIT - PH_REF)   # = 40°, le -π/2 des sinus s'annule
+    assert abs(r["phase_deg"] - exp_phase) < 2.0, (r["phase_deg"], exp_phase)
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
