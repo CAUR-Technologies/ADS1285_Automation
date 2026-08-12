@@ -193,6 +193,45 @@ def test_read_dat_tolerates_corrupt_record():
         assert c.meta["file"].get("records_skipped") == 1, offset
 
 
+def test_segment_correlate_recovers_sweep():
+    """`segment_correlate` retrouve la sensibilité par voie sur un balayage
+    synthétique (3 paliers concaténés dans le temps), SANS sods de référence —
+    c'est ce qui sauve un run quand la GNSS de réf. perd son fix."""
+    from equipment.geophone3axis.session import segment_correlate
+    fs = 250.0
+    lsb_v = 2.5 / (2 ** 31)
+    sweep = [(20.0, 150.0, 0.0060), (10.0, 150.0, 0.0058), (5.0, 240.0, 0.0062)]
+    #         freq   sens_cible    vitesse (pic à 5 Hz)
+    t_all, x1 = [], []
+    sod = 50000.0
+    for f, sens, v in sweep:
+        n = int(fs * 8.0)                      # 8 s par palier
+        t = sod + np.arange(n) / fs
+        counts = sens * v / lsb_v              # amplitude counts pour cette sensib.
+        x1.append(counts * np.sin(2 * np.pi * f * (t - sod)))
+        t_all.append(t)
+        # gap de settling (2 s quasi-silence) entre paliers, comme le servo au banc
+        # → sépare proprement les paliers (pas de dilution en frontière au lock-in).
+        sod = t[-1] + 1 / fs
+        ng = int(fs * 2.0)
+        tg = sod + np.arange(ng) / fs
+        x1.append(np.zeros(ng))
+        t_all.append(tg)
+        sod = tg[-1] + 1 / fs
+    T = np.concatenate(t_all)
+    X1 = np.concatenate(x1)
+    chan_t = {"1": T, "2": T, "3": T}
+    chan_x = {"1": X1, "2": X1 * 0.02, "3": X1 * 0.03}   # 2,3 = fuite transverse
+    vel = {f: v for f, _, v in sweep}
+    dat = segment_correlate(chan_t, chan_x, [f for f, _, _ in sweep], vel, lsb_v)
+
+    for f, sens, _ in sweep:
+        got = dat["1"][f]["sens_v_per_mps"]
+        assert approx(got, sens, tol=0.05), (f, got, sens)
+    # voie sur-axe = 1 (plus forte), transverse ~2-3 %
+    assert dat["1"][5.0]["counts_peak"] > 20 * dat["2"][5.0]["counts_peak"]
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

@@ -342,9 +342,12 @@ class ThreeAxisApp(tk.Tk):
                                 survey_path=survey_path if rec_dat else "")
                 self._logln("Balayage STREAM terminé.")
                 if rec_dat:
-                    self._logln("Récupération .dat + corrélation 250 Hz (GPS)…")
-                    dat = sess.correlate_dat_run(pts, lsb_v=lsb_v,
-                                                 survey_path=survey_path)
+                    self._logln("Récupération .dat + corrélation 250 Hz (segmentation)…")
+                    # Segmentation : robuste même si la GNSS de réf. perd son fix
+                    # (la corrélation sod droppait/désalignait des paliers → valeurs
+                    # fausses). Détecte chaque palier dans le signal .dat lui-même.
+                    dat = sess.correlate_dat_run_segmented(pts, lsb_v=lsb_v,
+                                                           survey_path=survey_path)
                     self.after(0, self._log_dat_results, dat, list(pts))
             except TestBenchAborted as e:
                 msg = str(e)

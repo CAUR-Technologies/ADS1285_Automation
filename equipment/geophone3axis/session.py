@@ -34,6 +34,99 @@ from equipment.dsp import (coherent_phasor, coherent_amplitude_peak,
                            coherent_phasor_at_times, snr_db, thd_percent, G_ACCEL)
 
 
+# ── Corrélation par SEGMENTATION (indépendante des sods GNSS) ───────────────
+# La corrélation temps-GPS (`correlate`/`correlate_dat_run`) exige que la GNSS de
+# référence ait un fix continu ; sinon des paliers sont droppés/désalignés. La
+# segmentation N'EN DÉPEND PAS : chaque palier est un tone stationnaire re-détecté
+# DANS le signal `.dat` (lock-in glissant → plateau), en imposant l'ordre du sweep.
+
+def detect_freq_window(times_sod, data, freq_hz, t_after):
+    """Fenêtre temps (sod) du palier `freq_hz` = région contiguë > 0,5·max autour de
+    l'argmax d'un lock-in glissant (fenêtre ~ max(3 s, 8/f), pas 1 s), cherchée
+    UNIQUEMENT après `t_after`. Retourne (lo, hi) ou None."""
+    win = max(3.0, 8.0 / freq_hz)
+    start = max(times_sod[0], t_after) + win / 2.0
+    centers = np.arange(start, times_sod[-1] - win / 2.0, 1.0)
+    if len(centers) == 0:
+        return None
+    resp = np.empty(len(centers))
+    for k, c in enumerate(centers):
+        m = (times_sod >= c - win / 2.0) & (times_sod <= c + win / 2.0)
+        resp[k] = abs(coherent_phasor_at_times(data[m], times_sod[m], freq_hz)) \
+            if m.sum() > 10 else 0.0
+    if resp.max() <= 0:
+        return None
+    i = int(resp.argmax())
+    # Seuil SERRÉ (0,8·max) : on garde le PLATEAU PLAT, pas la frontière où la
+    # fenêtre glissante chevauche le settling/gap voisin (réponse qui tapère). On
+    # retourne l'étendue des CENTRES retenus sans sur-extension `+win/2` (celle-ci
+    # débordait dans le palier/gap voisin → lock-in dilué, sensibilité sous-estimée).
+    hi_mask = resp > 0.8 * resp.max()
+    a = b = i
+    while a > 0 and hi_mask[a - 1]:
+        a -= 1
+    while b < len(hi_mask) - 1 and hi_mask[b + 1]:
+        b += 1
+    return (centers[a], centers[b])
+
+
+def segment_correlate(chan_times, chan_data, freqs, velocities, lsb_v):
+    """Lock-in par voie par palier, sur des fenêtres RE-DÉTECTÉES dans le signal.
+
+    chan_times/chan_data : {cid: ndarray} — sods (horloge unité) et échantillons.
+    freqs                : fréquences du balayage (Hz).
+    velocities           : {freq_hz: vitesse table m/s} (accéléro NI).
+    lsb_v                : volts / count de l'unité.
+
+    Détecte les paliers sur la voie la PLUS ÉNERGÉTIQUE (le géophone excité), dans
+    l'ordre du sweep (haute→basse), puis lock-in TOUTES les voies sur ces fenêtres.
+    Retour : {cid: {freq: {counts_peak, n, sens_counts_per_mps, sens_v_per_mps}}}
+    (même format que `correlate_dat_run`)."""
+    if not chan_data:
+        return {}
+    ref = max(chan_data, key=lambda c: float(np.std(chan_data[c])) if len(chan_data[c]) else 0.0)
+    out = {cid: {} for cid in chan_data}
+    t_after = chan_times[ref][0]
+    for fq in sorted(freqs, reverse=True):
+        w = detect_freq_window(chan_times[ref], chan_data[ref], fq, t_after)
+        if w is None:
+            continue
+        lo, hi = w
+        t_after = hi
+        v = velocities.get(fq)
+        good = v is not None and np.isfinite(v) and v > 0
+        for cid, data in chan_data.items():
+            ts = chan_times[cid]
+            m = (ts >= lo) & (ts <= hi)
+            if m.sum() < 10:
+                continue
+            cp = abs(coherent_phasor_at_times(data[m], ts[m], fq))
+            out[cid][fq] = {
+                "counts_peak": cp, "n": int(m.sum()),
+                "sens_counts_per_mps": cp / v if good else float("nan"),
+                "sens_v_per_mps": cp * lsb_v / v if good else float("nan"),
+            }
+    return out
+
+
+def channels_from_dat(paths):
+    """Lit des `.dat` → (chan_times, chan_data) : {cid: ndarray sods}, {cid: ndarray}.
+    Concatène les segments d'une voie dans l'ordre temporel (horloge unité)."""
+    from collections import defaultdict
+    buckets = defaultdict(list)
+    for path in paths:
+        for c in dat_reader.read_dat(path):
+            sod0 = (c.start_time_ns / 1e9) % 86400.0
+            t = sod0 + np.arange(len(c.data)) / c.sample_rate_hz
+            buckets[c.channel_id].append((t, np.asarray(c.data, dtype=np.float64)))
+    chan_times, chan_data = {}, {}
+    for cid, segs in buckets.items():
+        segs.sort(key=lambda s: s[0][0])
+        chan_times[cid] = np.concatenate([s[0] for s in segs])
+        chan_data[cid] = np.concatenate([s[1] for s in segs])
+    return chan_times, chan_data
+
+
 class Characterize3AxisSession:
     """Enchaîne une caractérisation 3 axes autour d'une excitation shaker.
 
@@ -293,6 +386,21 @@ class Characterize3AxisSession:
                     "sens_v_per_mps": cp * lsb_v / vel if good else float("nan"),
                 }
         return out
+
+    def correlate_dat_run_segmented(self, points, *, lsb_v: float,
+                                    survey_path: str = "") -> dict:
+        """Comme `correlate_dat_run` MAIS par SEGMENTATION (indépendant des sods de
+        la GNSS de référence — robuste quand celle-ci perd/lague son fix). Récupère
+        les `.dat`, re-détecte chaque palier dans le signal et lock-in par voie.
+
+        Même retour que `correlate_dat_run` → interchangeable côté GUI.
+        """
+        self.retrieve_files(survey_path)
+        chan_times, chan_data = channels_from_dat(self._pulled)
+        freqs = [p["freq_hz"] for p in points if not p.get("skipped")]
+        vel = {p["freq_hz"]: p.get("table_velocity_mps")
+               for p in points if not p.get("skipped")}
+        return segment_correlate(chan_times, chan_data, freqs, vel, lsb_v)
 
     def measure_point_stream(self, freq_hz: float, n_cycles: int = 10,
                              min_duration_s: float = 2.0,

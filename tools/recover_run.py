@@ -29,8 +29,9 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from equipment.geophone3axis.dat_reader import read_dat, UNIT3AXIS_FULLSCALE_VPEAK_G1
-from equipment.dsp import coherent_phasor_at_times, snr_db, fit_geophone_response
+from equipment.geophone3axis.dat_reader import UNIT3AXIS_FULLSCALE_VPEAK_G1
+from equipment.geophone3axis.session import segment_correlate, channels_from_dat
+from equipment.dsp import fit_geophone_response
 
 DATA_DIR = "data/3axis"
 FS = 250.0
@@ -52,54 +53,6 @@ def _parse_name(csv_path):
     return m.group(1), m.group(2), int(m.group(3)), m.group(4)
 
 
-def _load_channels(serial, survey):
-    """Concatène les 3 voies du survey, datées en sod (horloge unité)."""
-    files = sorted(glob.glob(os.path.join(DATA_DIR, f"*{survey}*{serial}*.dat")))
-    chan = {"1": [], "2": [], "3": []}
-    skipped = 0
-    for f in files:
-        for c in read_dat(f):
-            skipped += (c.meta.get("file", {}) or {}).get("records_skipped", 0)
-            sod0 = (c.start_time_ns / 1e9) % 86400.0
-            t = sod0 + np.arange(len(c.data)) / c.sample_rate_hz
-            chan.setdefault(c.channel_id, []).append((t, c.data.astype(float)))
-    T, X = {}, {}
-    for cid, segs in chan.items():
-        if not segs:
-            continue
-        segs.sort(key=lambda s: s[0][0])
-        T[cid] = np.concatenate([s[0] for s in segs])
-        X[cid] = np.concatenate([s[1] for s in segs])
-    return T, X, len(files), skipped
-
-
-def _detect_window(T1, X1, fq, t_after):
-    """Plateau temps du palier `fq` = région contiguë > 0,5·max autour de l'argmax
-    d'un lock-in glissant (fenêtre ~ max(3 s, 8/f), pas 1 s), cherchée UNIQUEMENT
-    après `t_after` (sweep haute→basse : chaque palier suit le précédent → pas de
-    fenêtre qui se chevauche ni qui remonte, robuste même quand le signal BF est
-    noyé dans le bruit)."""
-    win = max(3.0, 8.0 / fq)
-    start = max(T1[0], t_after) + win / 2
-    cs = np.arange(start, T1[-1] - win / 2, 1.0)
-    if len(cs) == 0:
-        return None
-    resp = np.array([abs(coherent_phasor_at_times(
-        X1[(T1 >= c - win / 2) & (T1 <= c + win / 2)],
-        T1[(T1 >= c - win / 2) & (T1 <= c + win / 2)], fq))
-        if ((T1 >= c - win / 2) & (T1 <= c + win / 2)).sum() > 10 else 0.0 for c in cs])
-    if resp.max() <= 0:
-        return None
-    i = int(resp.argmax())
-    hi = resp > 0.5 * resp.max()
-    a = b = i
-    while a > 0 and hi[a - 1]:
-        a -= 1
-    while b < len(hi) - 1 and hi[b + 1]:
-        b += 1
-    return (cs[a] - win / 2 + 0.5, cs[b] + win / 2 - 0.5)
-
-
 def recover(csv_path):
     serial, axis, gain, ts = _parse_name(csv_path)
     survey = "Bench_" + ts
@@ -109,50 +62,31 @@ def recover(csv_path):
     vel = {float(r["freq_hz"]): float(r["table_velocity_mps"]) for r in rows}
     accel = {float(r["freq_hz"]): float(r["accel_g"]) for r in rows}
 
-    T, X, nfiles, skipped = _load_channels(serial, survey)
-    if "1" not in X:
-        print(f"survey {survey}: aucune voie 1 (.dat introuvable ?)")
+    files = sorted(glob.glob(os.path.join(DATA_DIR, f"*{survey}*{serial}*.dat")))
+    T, X = channels_from_dat(files)          # {cid: sods}, {cid: data} (shared)
+    if not X:
+        print(f"survey {survey}: aucun .dat (introuvable ?)")
         return
-    print(f"run {serial} {axis} g{gain} — survey {survey} : {nfiles} fichiers, "
-          f"{skipped} records corrompus ignorés, voie1 {len(X['1'])} ech "
-          f"({T['1'][-1]-T['1'][0]:.0f}s)")
+    ref = max(X, key=lambda c: float(np.std(X[c])) if len(X[c]) else 0.0)
+    print(f"run {serial} {axis} g{gain} — survey {survey} : {len(files)} fichiers, "
+          f"voie forte {ref} {len(X[ref])} ech ({T[ref][-1]-T[ref][0]:.0f}s)")
 
-    DAT = {"1": {}, "2": {}, "3": {}}
-    print(f"\n{'f(Hz)':>7}{'v(m/s)':>9}{'ch1 V/(m/s)':>13}{'snr1':>7}"
-          f"{'ch2':>8}{'ch3':>8}   fenetre")
-    # Sweep haute→basse : détecter dans l'ordre décroissant, chaque fenêtre après
-    # la précédente (t_after avance) → les paliers BF ne peuvent plus voler une
-    # fenêtre du milieu du sweep.
-    t_after = T["1"][0]
-    for fq in sorted(freqs, reverse=True):
-        w = _detect_window(T["1"], X["1"], fq, t_after)
-        if w is None:
-            print(f"{fq:>7}   (non détecté)")
-            continue
-        lo, hi = w
-        t_after = hi
+    # Corrélation par segmentation (MÊME code que le GUI : session.segment_correlate).
+    DAT = segment_correlate(T, X, freqs, vel, lsb_v)
+
+    print(f"\n{'f(Hz)':>7}{'v(m/s)':>9}{'ch1 V/(m/s)':>13}{'ch2':>8}{'ch3':>8}{'n':>7}")
+    for fq in freqs:
         line = f"{fq:>7}{vel[fq]:>9.5f}"
         for cid in ("1", "2", "3"):
-            if cid not in X:
-                continue
-            tt, xx = T[cid], X[cid]
-            m = (tt >= lo) & (tt <= hi)
-            if m.sum() < 10:
-                continue
-            cp = abs(coherent_phasor_at_times(xx[m], tt[m], fq))
-            s = cp * lsb_v / vel[fq] if vel[fq] > 0 else float("nan")
-            DAT[cid][fq] = {"sens_v_per_mps": s,
-                            "sens_counts_per_mps": cp / vel[fq] if vel[fq] > 0 else float("nan"),
-                            "counts_peak": cp, "n": int(m.sum())}
-            if cid == "1":
-                line += f"{s:>13.1f}{snr_db(xx[m], fq, FS):>7.1f}"
-            else:
-                line += f"{s:>8.2f}"
-        print(line + f"   [{lo-T['1'][0]:.0f},{hi-T['1'][0]:.0f}]s")
+            d = DAT.get(cid, {}).get(fq)
+            w = 13 if cid == "1" else 8
+            line += (f"{d['sens_v_per_mps']:>{w}.{1 if cid=='1' else 2}f}" if d else f"{'-':>{w}}")
+        d1 = DAT.get("1", {}).get(fq)
+        print(line + (f"{d1['n']:>7}" if d1 else f"{'-':>7}"))
 
-    on_axis = max(("1", "2", "3"),
-                  key=lambda c: sum(d["counts_peak"] for d in DAT[c].values()) if DAT[c] else 0)
-    ff = [f for f in freqs if f in DAT[on_axis]]
+    on_axis = max(DAT, key=lambda c: sum(v["counts_peak"] for v in DAT[c].values())
+                  if DAT[c] else 0) if DAT else "1"
+    ff = [f for f in freqs if f in DAT.get(on_axis, {})]
     ss = [DAT[on_axis][f]["sens_v_per_mps"] for f in ff]
     fit = fit_geophone_response(ff, ss) if len(ff) >= 4 else None
 
