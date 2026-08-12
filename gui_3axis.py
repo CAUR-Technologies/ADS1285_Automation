@@ -17,10 +17,13 @@ Lancer :  python gui_3axis.py
 
 import csv
 import datetime
+import json
 import os
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
+
+from equipment.dsp import fit_geophone_response
 
 from equipment.wavetek import Wavetek39A
 from equipment.aps import APSController
@@ -366,7 +369,8 @@ class ThreeAxisApp(tk.Tk):
 
     def _log_dat_results(self, dat, pts):
         """Repeuple la table + le journal avec la sensibilité .dat 250 Hz (voie
-        sur-axe = max counts), timestamps GPS précis."""
+        sur-axe = max counts), timestamps GPS précis, PUIS persiste la courbe et le
+        fit (G0, f0, ζ) sur disque — plus besoin de recopier le log à la main."""
         self._logln("=== Sensibilité .dat 250 Hz (timestamps GPS précis) ===")
         freqs = sorted({f for byf in dat.values() for f in byf}, reverse=True)
         if not freqs:
@@ -374,8 +378,16 @@ class ThreeAxisApp(tk.Tk):
                         "sur l'unité)")
             return
         accel = {p["freq_hz"]: p.get("accel_g") for p in pts if not p.get("skipped")}
+        # Voie SUR-AXE = celle qui répond le plus (somme des counts sur le balayage)
+        # → c'est le géophone physiquement excité par cet axe du shaker.
+        totals = {cid: sum(d["counts_peak"] for d in byf.values())
+                  for cid, byf in dat.items() if byf}
+        on_axis = max(totals, key=totals.get) if totals else None
+
         for it in self.tree.get_children():   # remplace les lignes accéléro par les résultats .dat
             self.tree.delete(it)
+        rows = []          # pour le RESULTS.csv
+        fit_f, fit_s = [], []
         for f in freqs:
             best = None
             for cid, byf in dat.items():
@@ -390,6 +402,56 @@ class ThreeAxisApp(tk.Tk):
                 f"{f:g}", f"{a*1e3:.2f}" if a else "—", f"voie {cid}",
                 f"{d['sens_counts_per_mps']:.3g}", f"{d['sens_v_per_mps']:.1f}", f"n={d['n']}"))
             self._logln(f"  {f:>4g} Hz  voie {cid}  S = {d['sens_v_per_mps']:.1f} V/(m/s)  (n={d['n']})")
+            oa = dat.get(on_axis, {}).get(f)
+            if oa and oa["sens_v_per_mps"] > 0:
+                fit_f.append(f); fit_s.append(oa["sens_v_per_mps"])
+            rows.append((f, cid, a))
+
+        self._persist_dat_results(dat, accel, on_axis, freqs, fit_f, fit_s)
+
+    def _persist_dat_results(self, dat, accel, on_axis, freqs, fit_f, fit_s):
+        """Écrit <run>_RESULTS.csv (sensibilité corrélée par voie) + <run>_FIT.json
+        (G0, f0, ζ de la voie sur-axe). Lisible tel quel par la synthèse de campagne."""
+        base = getattr(self, "_results_base", None)
+        if not base:
+            return
+        # 1) fit modèle 2e ordre sur la voie sur-axe
+        fit = fit_geophone_response(fit_f, fit_s) if len(fit_f) >= 4 else None
+        if fit:
+            import numpy as _np
+            z = fit["zeta"]
+            peak = 1.0/(2*z*_np.sqrt(1-z**2)) if z < 0.707 else 1.0
+            self._logln(f"=== FIT voie {on_axis} : G0={fit['G0']:.1f} V/(m/s)  "
+                        f"f0={fit['f0']:.2f} Hz  ζ={fit['zeta']:.3f}  "
+                        f"(pic ×{peak:.2f}={fit['G0']*peak:.0f}, RMS {fit['rms_error_db']:.2f} dB)")
+        else:
+            self._logln("  (fit indisponible — < 4 points valides sur-axe)")
+        meta = {"serial": self.unit_serial, "axis": self.axis.get(),
+                "gain": getattr(self, "_run_gain", 1), "on_axis_channel": on_axis,
+                "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+                "fit": fit, "n_freqs": len(freqs)}
+        try:
+            with open(base + "_FIT.json", "w", encoding="utf-8") as fp:
+                json.dump(meta, fp, indent=2, ensure_ascii=False)
+            with open(base + "_RESULTS.csv", "w", newline="", encoding="utf-8") as fp:
+                w = csv.writer(fp)
+                hdr = ["freq_hz", "accel_g", "on_axis_channel"]
+                for c in ("1", "2", "3"):
+                    hdr += [f"ch{c}_S_V_per_mps", f"ch{c}_S_cnt_per_mps",
+                            f"ch{c}_counts_pk", f"ch{c}_n"]
+                w.writerow(hdr)
+                for f in freqs:
+                    row = [f"{f:g}", f"{accel.get(f) or float('nan'):.6g}", on_axis or ""]
+                    for c in ("1", "2", "3"):
+                        d = dat.get(c, {}).get(f, {})
+                        row += [f"{d.get('sens_v_per_mps', float('nan')):.6g}",
+                                f"{d.get('sens_counts_per_mps', float('nan')):.6g}",
+                                f"{d.get('counts_peak', float('nan')):.6g}",
+                                d.get("n", "")]
+                    w.writerow(row)
+            self._logln(f"→ résultats : {os.path.basename(base)}_RESULTS.csv + _FIT.json")
+        except Exception as e:   # noqa: BLE001
+            self._logln(f"(sauvegarde résultats indisponible : {e})")
 
     # ------- sauvegarde CSV -------
     def _open_csv(self, gain):
@@ -398,6 +460,8 @@ class ThreeAxisApp(tk.Tk):
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             path = os.path.join(GEOPHONE3AXIS_DATA_DIR,
                                 f"3axis_{self.unit_serial}_{self.axis.get()}_g{gain}_{ts}.csv")
+            self._results_base = path[:-4]   # préfixe pour RESULTS.csv / FIT.json
+            self._run_gain = gain
             self._csv_file = open(path, "w", newline="", encoding="utf-8")
             self._csv = csv.writer(self._csv_file)
             hdr = ["freq_hz", "accel_g", "table_velocity_mps", "geo_fs", "on_axis"]
