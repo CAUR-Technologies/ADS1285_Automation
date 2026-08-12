@@ -29,6 +29,7 @@ import numpy as np
 
 from equipment.geophone3axis.geophone3axis import Geophone3Axis
 from equipment.geophone3axis import dat_reader
+from equipment.testbench import TestBenchAborted
 from equipment.dsp import (coherent_phasor, coherent_amplitude_peak,
                            coherent_phasor_at_times, snr_db, thd_percent, G_ACCEL)
 
@@ -59,10 +60,58 @@ class Characterize3AxisSession:
         self.unit.set_config(unit_config)
         return self.unit.config()
 
-    def start_unit(self) -> None:
-        """Démarre l'enregistrement de l'unité + marqueur de synchro."""
+    def start_unit(self, survey_path: str = "", *, verify: bool = True,
+                   verify_timeout_s: float = 8.0) -> None:
+        """Démarre l'enregistrement de l'unité + marqueur de synchro, et VÉRIFIE
+        que l'enregistrement a réellement démarré.
+
+        Le firmware renvoie « OK START » MÊME quand rien n'est écrit :
+          - porte niveau/GPS fermée (`blocked_not_level` / pas de fix) ;
+          - START idempotent = no-op si l'unité était déjà en acquisition d'une
+            session précédente (morte).
+        Sans garde, un balayage entier se déroule en n'enregistrant RIEN (incident
+        2026-08-11 : sweep complet 100→0,1 Hz, CSV complet mais 0 fichier .dat).
+
+        Parade : on repart d'un état propre (STOP puis START) puis, si
+        `survey_path` est fourni, on confirme que de nouveaux .dat apparaissent
+        réellement dans le dossier — sinon on STOP et on lève `TestBenchAborted`
+        AVANT de perdre 8 min à balayer dans le vide.
+        """
+        # État propre : STOP explicite avant START (annule un no-op idempotent si
+        # une session précédente a laissé l'unité en acquisition).
+        try:
+            self.unit.stop()
+            time.sleep(0.3)
+        except Exception:   # noqa: BLE001
+            pass
         self.unit.start()
         self.unit.sync()   # marqueur temporel pour l'alignement GPS
+        if not (verify and survey_path):
+            return
+
+        def _count() -> int:
+            # Le comptage LS est instable pendant l'écriture FAT (lectures
+            # transitoires en baisse) : on suit le MAX vu, la preuve d'écriture
+            # est qu'un comptage dépasse la base à un moment.
+            try:
+                return len(self.unit.ls(survey_path))
+            except Exception:   # noqa: BLE001
+                return -1
+        base = max(_count(), 0)
+        deadline = time.time() + verify_timeout_s
+        while time.time() < deadline:
+            time.sleep(1.5)
+            if _count() > base:
+                return   # enregistrement CONFIRMÉ (nouveaux fichiers)
+        try:
+            self.unit.stop()
+        except Exception:   # noqa: BLE001
+            pass
+        raise TestBenchAborted(
+            f"Unité : enregistrement NON démarré — aucun nouveau .dat dans "
+            f"{survey_path} après {verify_timeout_s:.0f} s (le firmware a répondu "
+            f"« OK START »). Porte niveau/GPS fermée ou START no-op. Vérifier "
+            f"tilt < max_pitch/roll, fix GPS, puis relancer.")
 
     def stop_unit(self) -> None:
         self.unit.stop()
@@ -343,7 +392,7 @@ class Characterize3AxisSession:
 
     def run_stream(self, freqs, unit_config: dict | None = None,
                    start_unit: bool = False, excite: bool = True,
-                   on_point=None, **point_kwargs) -> list[dict]:
+                   on_point=None, survey_path: str = "", **point_kwargs) -> list[dict]:
         """Balayage en voie STREAM : (config unité) → pour chaque fréquence,
         `measure_point_stream` → liste de points. Coupe l'excitation à la fin.
 
@@ -356,7 +405,7 @@ class Characterize3AxisSession:
         if excite:
             self.bench.check_reference_alive()
         if start_unit:
-            self.start_unit()
+            self.start_unit(survey_path)
         points: list[dict] = []
         # SÉCURITÉ : à l'excitation, balayer de la HAUTE vers la BASSE fréquence.
         # Le déplacement croît en 1/f² ; si un défaut (accéléro qui ne capte pas,

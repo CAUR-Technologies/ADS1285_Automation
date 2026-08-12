@@ -301,6 +301,12 @@ class ThreeAxisApp(tk.Tk):
             pts.append(p)
             self.after(0, self._add_row, p, lsb_v)
 
+        # Dossier survey UNIQUE par run (horodaté) : ne jamais réutiliser un nom
+        # → chaque run est isolé (pas de mélange), et un START « à blanc » ne peut
+        # pas se confondre avec les fichiers d'un run précédent (incident sweep).
+        survey_id = "Bench_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        survey_path = "/survey-data/" + survey_id
+
         def work():
             gnss = None
             try:
@@ -311,21 +317,28 @@ class ThreeAxisApp(tk.Tk):
                     gnss = Gnss(port=GNSS_PORT, baud=GNSS_BAUD); gnss.connect()
                     # Unité en enregistrement 250 Hz pendant le balayage (fichiers
                     # ~3 s pour qu'ils se FERMENT en cours de run → récupérables).
+                    # Tolérance de tilt ÉLARGIE au banc : on excite volontairement
+                    # l'unité, l'inclinaison instantanée sous vibration ne doit pas
+                    # fermer la porte niveau du firmware.
                     self.unit.set_config({"sample_rate_hz": 250, "samples_by_record": 250,
-                                          "records_per_file": 8, "survey_id": "BenchRun2"})
+                                          "records_per_file": 8, "survey_id": survey_id,
+                                          "max_pitch_deg": 30, "max_roll_deg": 30})
                 sess = Characterize3AxisSession(self.bench, self.unit, gnss, None,
                                                 GEOPHONE3AXIS_DATA_DIR)
                 # ≥10 cycles par palier (essentiel en BF : à 0,1 Hz, 10 cycles = 100 s),
                 # plafonné pour borner la durée totale. En STREAM (check) fenêtres courtes.
+                # `survey_path` : start_unit VÉRIFIE que l'enregistrement démarre
+                # vraiment (sinon abort immédiat au lieu de balayer dans le vide).
                 sess.run_stream(freqs, excite=True, n_cycles=10,
                                 min_duration_s=5.0 if rec_dat else 2.0,
                                 max_duration_s=60.0 if rec_dat else 8.0, on_point=on_point,
-                                start_unit=rec_dat, stream=not rec_dat)
+                                start_unit=rec_dat, stream=not rec_dat,
+                                survey_path=survey_path if rec_dat else "")
                 self._logln("Balayage STREAM terminé.")
                 if rec_dat:
                     self._logln("Récupération .dat + corrélation 250 Hz (GPS)…")
                     dat = sess.correlate_dat_run(pts, lsb_v=lsb_v,
-                                                 survey_path="/survey-data/BenchRun2")
+                                                 survey_path=survey_path)
                     self.after(0, self._log_dat_results, dat, list(pts))
             except TestBenchAborted as e:
                 msg = str(e)

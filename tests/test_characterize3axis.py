@@ -121,6 +121,40 @@ def test_correlate_gps_aligned():
     assert abs(r["phase_deg"] - exp_phase) < 2.0, (r["phase_deg"], exp_phase)
 
 
+class _RecUnit:
+    """Unité mockée pour la garde `start_unit` : `ls` grandit si `recording`."""
+    def __init__(self, recording: bool):
+        self.recording = recording
+        self._n = 3
+        self.stopped = False
+    def start(self): pass
+    def stop(self): self.stopped = True
+    def sync(self): pass
+    def ls(self, path=""):
+        if self.recording:
+            self._n += 1        # de nouveaux .dat apparaissent
+        return [{"path": f"f{i}"} for i in range(self._n)]
+
+
+def test_start_unit_verify_ok():
+    """Enregistrement qui démarre : `start_unit` confirme (retour sans exception)."""
+    sess = Characterize3AxisSession(_MockBench(), _RecUnit(recording=True),
+                                    None, None, "data/3axis")
+    sess.start_unit("/survey-data/Run", verify_timeout_s=4.0)   # ne lève pas
+
+
+def test_start_unit_verify_aborts_when_no_files():
+    """Firmware « OK START » mais AUCUN fichier → abort explicite (anti-sweep à vide)."""
+    from equipment.testbench import TestBenchAborted
+    u = _RecUnit(recording=False)
+    sess = Characterize3AxisSession(_MockBench(), u, None, None, "data/3axis")
+    try:
+        sess.start_unit("/survey-data/Run", verify_timeout_s=3.0)
+        raise AssertionError("aurait dû lever TestBenchAborted")
+    except TestBenchAborted:
+        assert u.stopped, "doit STOP l'unité avant d'abandonner"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
