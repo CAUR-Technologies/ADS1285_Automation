@@ -174,18 +174,23 @@ def test_read_dat_tolerates_corrupt_record():
                             extraHeaders={"caurtech": {"channel": ch}}).pack()
 
     good1, good2 = _rec("1", 0), _rec("1", 1)
-    bad = bytearray(_rec("1", 2)); bad[-4] ^= 0xFF          # corrompt la data → CRC fail
-    path = os.path.join(tempfile.gettempdir(), "test_corrupt_3axis.dat")
-    with open(path, "wb") as fp:
-        fp.write(good1 + good2 + bytes(bad))
-    try:
-        chans = read_dat(path)
-    finally:
-        os.remove(path)
-    assert chans, "doit récupérer au moins une voie malgré le record corrompu"
-    c = chans[0]
-    assert len(c.data) == 500, (len(c.data), "les 2 bons records (2×250) conservés")
-    assert c.meta["file"].get("records_skipped") == 1
+    # Deux modes de corruption réellement observés au banc, selon l'octet touché :
+    #   -4  = zone data      -> CRC fail (Miniseed3Exception)
+    #   55  = identifiant/eh -> décodage UTF-8 invalide (UnicodeDecodeError)
+    for offset, val in ((-4, None), (55, 0xBB)):
+        bad = bytearray(_rec("1", 2))
+        bad[offset] = (bad[offset] ^ 0xFF) if val is None else val
+        path = os.path.join(tempfile.gettempdir(), "test_corrupt_3axis.dat")
+        with open(path, "wb") as fp:
+            fp.write(good1 + good2 + bytes(bad))
+        try:
+            chans = read_dat(path)
+        finally:
+            os.remove(path)
+        assert chans, f"offset {offset} : doit récupérer une voie malgré la corruption"
+        c = chans[0]
+        assert len(c.data) == 500, (offset, len(c.data), "2 bons records (2×250) conservés")
+        assert c.meta["file"].get("records_skipped") == 1, offset
 
 
 if __name__ == "__main__":
