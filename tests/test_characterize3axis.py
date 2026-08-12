@@ -232,6 +232,17 @@ def test_segment_correlate_recovers_sweep():
     assert dat["1"][5.0]["counts_peak"] > 20 * dat["2"][5.0]["counts_peak"]
 
 
+def test_time_offset_from_phase_slope():
+    """TIME-05 : l'offset d'horloge unité↔référence se retrouve par la pente de la
+    rampe de phase HF (360·f·Δt par-dessus la phase capteur plate)."""
+    from tools.time_offset import clock_offset_from_phases
+    dt_us = 180.0
+    phases = {f: -8.0 + 360.0 * f * (dt_us * 1e-6) + 0.3 * np.sin(f)
+              for f in (20, 30, 50, 70, 100)}
+    r = clock_offset_from_phases(phases, f_min_hz=20.0)
+    assert r is not None and abs(r["offset_us"] - dt_us) < 5.0, r
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
