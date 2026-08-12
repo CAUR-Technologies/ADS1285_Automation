@@ -237,13 +237,17 @@ def _transfer_test(g, sp):
                               f"({rate*100:.0f}%), {thr:.1f} fich/s"})
     if chan_std:
         present = sorted(chan_std)
-        alive = all(v[0] > 5 for v in chan_std.values())   # >5 counts RMS = pas figé
+        missing = not (set(chan_std) >= {"1", "2", "3"})
+        dead = not all(v[0] > 5 for v in chan_std.values())   # std≈0 = voie figée
         railed = any(v[1] for v in chan_std.values())
-        v2ok = set(chan_std) >= {"1", "2", "3"} and alive and not railed
-        res.append({"test": "V2 ADC x3", "verdict": PASS if v2ok else FAIL,
-                    "detail": f"voies={present} std={ {k: round(v[0]) for k, v in chan_std.items()} }"
-                              f"{' SATURE' if railed else ''}"
-                              f"{'' if set(chan_std) >= {'1','2','3'} else ' — voie(s) MANQUANTE(s)'}"})
+        # FAIL = défaut ADC réel (voie absente/morte). Saturation = amplitude
+        # d'enregistrement (ex. caractérisation forte ampli), PAS un défaut → WARN.
+        verdict = FAIL if (missing or dead) else (WARN if railed else PASS)
+        note = (" — voie(s) MANQUANTE(s)" if missing else
+                " — voie FIGÉE (std~0)" if dead else
+                " SATURE (ampli d'enregistrement, pas un défaut ADC)" if railed else "")
+        res.append({"test": "V2 ADC x3", "verdict": verdict,
+                    "detail": f"voies={present} std={ {k: round(v[0]) for k, v in chan_std.items()} }{note}"})
     else:
         res.append({"test": "V2 ADC x3", "verdict": FAIL, "detail": "aucun .dat lisible"})
     res.append({"test": "V8 miniSEED", "verdict": PASS if n_ok and not frozen else FAIL,
@@ -331,7 +335,7 @@ def transfer_only(g):
         return [{"test": "V7 transfert données", "verdict": WARN,
                  "detail": "aucun survey sur la SD — enregistre d'abord (bouton) puis relance"}]
     res, n_channels, gps_ok, frozen = _transfer_test(g, ex)
-    res.append({"test": "V4/V15 acquisition E2E", "verdict": WARN,
+    res.append({"test": "V4/V15 acquisition E2E", "verdict": "N/A",
                 "detail": f"transfert validé sur survey existant {ex} ({n_channels} voies, "
                           f"{'GPS' if gps_ok else 'non-GPS'}) ; record frais = à valider au bouton"})
     return res
