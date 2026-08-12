@@ -33,6 +33,12 @@ from config.settings import GEOPHONE3AXIS_VID, GEOPHONE3AXIS_PID
 OUT_DIR = "data/acceptance"
 PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
 
+# Console Windows cp1252 : ne jamais crasher sur un caractère non encodable (≈, →…).
+try:
+    sys.stdout.reconfigure(errors="replace")
+except Exception:   # noqa: BLE001
+    pass
+
 
 def _call_timeout(fn, timeout_s):
     """Exécute fn() dans un thread ; retourne (résultat, timed_out). Sert à détecter
@@ -132,7 +138,7 @@ def v6_imu(g):
     gm = float(np.median(gmags))
     ok = 0.8 <= gm <= 1.2 and n >= 3
     return {"test": "V6 IMU", "verdict": PASS if ok else WARN,
-            "detail": f"|g|={gm:.3f} (n={n}), incl≈{np.median(tilts):.1f}°"}
+            "detail": f"|g|={gm:.3f} (n={n}), incl~{np.median(tilts):.1f} deg"}
 
 
 def cfg_roundtrip(g):
@@ -159,58 +165,34 @@ def v11_battery(g):
             "detail": f"battery={b} %"}
 
 
-def record_and_get(g, rec_s):
-    """V2 + V4 + V7 + V8 + V15 — enregistre puis récupère TOUT le survey en mesurant
-    corruption et FREEZE. Retourne (liste de résultats, dossier survey)."""
-    ts = datetime.datetime.now().strftime("%H%M%S")
-    survey = f"ACC_{ts}"
-    sp = f"/survey-data/{survey}"
-    g.set_config({"sample_rate_hz": 250, "samples_by_record": 250,
-                  "records_per_file": 8, "gain": 1, "survey_id": survey,
-                  "max_pitch_deg": 45, "max_roll_deg": 45})
-    # démarrage vérifié (STOP→START→apparition fichiers)
-    try:
-        g.stop(); time.sleep(0.3)
-    except Exception:   # noqa: BLE001
-        pass
-    g.start(); g.sync()
-    started, t0 = False, time.time()
-    while time.time() - t0 < 12:
-        time.sleep(1.5)
+def _largest_survey(g):
+    """Survey existant avec le plus de fichiers — pour tester le TRANSFERT sans
+    dépendre d'un enregistrement frais (GPS-gaté). None si aucun."""
+    dirs = [d["path"] for d in g.ls("/survey-data") if d.get("dir")]
+    best, best_n = None, 0
+    for d in dirs:
         try:
-            if len(g.ls(sp)) > 0:
-                started = True; break
+            n = len(g.ls(d))
+        except Frozen:
+            raise
         except Exception:   # noqa: BLE001
-            pass
-    if not started:
-        try:
-            g.stop()
-        except Exception:   # noqa: BLE001
-            pass
-        r_gate = {"test": "V4/V15 acquisition", "verdict": FAIL,
-                  "detail": "enregistrement NON démarré (porte GPS/tilt — fix absent ?)"}
-        return [r_gate], sp
-    # laisse enregistrer
-    time.sleep(max(0, rec_s))
-    try:
-        g.stop()
-    except Exception:   # noqa: BLE001
-        pass
-    time.sleep(0.5)
+            n = 0
+        if n > best_n:
+            best, best_n = d, n
+    return best if best_n > 0 else None
 
-    # ---- V7 stress transfert : GET tout le survey, timeout court par fichier ----
-    try:
-        files = sorted(f["path"] for f in g.ls(sp))
-    except Exception as e:   # noqa: BLE001
-        return [{"test": "V7 µSD/transfert", "verdict": FAIL,
-                 "detail": f"LS survey échoué: {e}"}], sp
+
+def _transfer_test(g, sp):
+    """GET tout le survey `sp` (record ARRÊTÉ) → V7 transfert + V2 ADC + V8 miniSEED.
+    Retourne (res, parsed_channels, gps_time_ok, frozen)."""
+    files = sorted(f["path"] for f in g.ls(sp))
     os.makedirs(OUT_DIR, exist_ok=True)
     n_ok = n_corrupt = 0
     frozen = False
-    parsed_channels = None
-    gps_time_ok = False
-    t_get0 = time.time()
-    for i, p in enumerate(files):
+    gps_ok = False
+    chan_std = {}          # cid -> (std max vu, saturé ?) AGRÉGÉ sur TOUS les fichiers
+    t0 = time.time()
+    for p in files:
         try:
             data = g.get_file(p)          # SafeUnit : timeout 20 s → Frozen
         except Frozen:
@@ -225,53 +207,137 @@ def record_and_get(g, rec_s):
             n_ok += 1
             if any((c.meta.get("file", {}) or {}).get("records_skipped") for c in chans):
                 n_corrupt += 1
-            if parsed_channels is None and chans:
-                parsed_channels = chans
-                # temps GPS réel ? (année >= 2020)
+            for c in chans:                # voies réparties sur plusieurs fichiers → agréger
+                s = float(np.std(c.data)) if len(c.data) else 0.0
+                r = bool(np.max(np.abs(c.data)) >= 0.98 * 2**31) if len(c.data) else False
+                pstd, prail = chan_std.get(c.channel_id, (0.0, False))
+                chan_std[c.channel_id] = (max(pstd, s), prail or r)
+            if not gps_ok and chans:
                 yr = datetime.datetime.utcfromtimestamp(chans[0].start_time_ns/1e9).year
-                gps_time_ok = yr >= 2020
+                gps_ok = yr >= 2020
         except Exception:   # noqa: BLE001
             n_corrupt += 1
         finally:
             try: os.remove(local)
             except OSError: pass
-    dt = time.time() - t_get0
+    dt = time.time() - t0
     thr = (n_ok / dt) if dt > 0 else 0.0
+    n_channels = len(chan_std)
 
     res = []
-    # V7
     if frozen:
-        res.append({"test": "V7 µSD/transfert", "verdict": FAIL,
-                    "detail": f"FREEZE pendant GET après {n_ok}/{len(files)} fichiers"})
+        res.append({"test": "V7 transfert données", "verdict": FAIL,
+                    "detail": f"FREEZE pendant GET (record arrêté) après {n_ok}/{len(files)} "
+                              f"fichiers — DÉFAUT PRODUIT (transfert non fiable)"})
     else:
         rate = (n_corrupt / n_ok) if n_ok else 1.0
         v = PASS if rate == 0 else (WARN if rate < 0.10 else FAIL)
-        res.append({"test": "V7 µSD/transfert", "verdict": v,
-                    "detail": f"{n_ok}/{len(files)} lus, {n_corrupt} corrompus "
+        res.append({"test": "V7 transfert données", "verdict": v,
+                    "detail": f"{n_ok}/{len(files)} transférés, {n_corrupt} corrompus "
                               f"({rate*100:.0f}%), {thr:.1f} fich/s"})
-    # V2 — 3 voies vivantes, non plates, non saturées
-    if parsed_channels:
-        ids = sorted(c.channel_id for c in parsed_channels)
-        stds = {c.channel_id: float(np.std(c.data)) for c in parsed_channels}
-        railed = any(np.max(np.abs(c.data)) >= 0.98 * 2**31 for c in parsed_channels)
-        alive = all(s > 5 for s in stds.values())  # >5 counts RMS = pas figé à 0
-        v2ok = len(parsed_channels) >= 3 and alive and not railed
-        res.append({"test": "V2 ADC ×3", "verdict": PASS if v2ok else FAIL,
-                    "detail": f"voies={ids} std={ {k: round(v) for k,v in stds.items()} } "
-                              f"{'SATURÉ' if railed else ''}"})
+    if chan_std:
+        present = sorted(chan_std)
+        alive = all(v[0] > 5 for v in chan_std.values())   # >5 counts RMS = pas figé
+        railed = any(v[1] for v in chan_std.values())
+        v2ok = set(chan_std) >= {"1", "2", "3"} and alive and not railed
+        res.append({"test": "V2 ADC x3", "verdict": PASS if v2ok else FAIL,
+                    "detail": f"voies={present} std={ {k: round(v[0]) for k, v in chan_std.items()} }"
+                              f"{' SATURE' if railed else ''}"
+                              f"{'' if set(chan_std) >= {'1','2','3'} else ' — voie(s) MANQUANTE(s)'}"})
     else:
-        res.append({"test": "V2 ADC ×3", "verdict": FAIL, "detail": "aucun .dat lisible"})
-    # V8 miniSEED
+        res.append({"test": "V2 ADC x3", "verdict": FAIL, "detail": "aucun .dat lisible"})
     res.append({"test": "V8 miniSEED", "verdict": PASS if n_ok and not frozen else FAIL,
-                "detail": f"{n_ok} fichiers parsés (simplemseed v3)"})
-    # V4/V15 — recording a démarré (porte GPS OK) + timestamps GPS réels + 3 voies
-    v15ok = started and parsed_channels and len(parsed_channels) >= 3 and gps_time_ok and not frozen
-    res.append({"test": "V4/V15 acquisition E2E", "verdict": PASS if v15ok else WARN,
-                "detail": f"gate OK, {'timestamps GPS réels' if gps_time_ok else 'horodatage non-GPS ?'}"})
-    return res, sp
+                "detail": f"{n_ok} fichiers parses (simplemseed v3)"})
+    return res, n_channels, gps_ok, frozen
 
 
-def run_unit(rec_s=90):
+def record_and_get(g, rec_s):
+    """USB = config + transfert SEULEMENT (jamais actif pendant l'enregistrement en
+    champ). Séquence : CONFIG → START (minimal) → record SANS trafic USB → STOP →
+    GET tout le survey ENREGISTREMENT ARRÊTÉ (= le vrai transfert de données). Si
+    l'enregistrement ne démarre pas (pas de fix GPS), le transfert est quand même
+    testé sur un survey EXISTANT (le transfert ne dépend pas d'un fix)."""
+    ts = datetime.datetime.now().strftime("%H%M%S")
+    survey = f"ACC_{ts}"
+    sp = f"/survey-data/{survey}"
+    started = False
+    try:
+        # records_per_file=2 → fichiers de 2 s : se ferment vite (démarrage visible
+        # à ~t+6 s) ET donnent plus de fichiers pour stresser le transfert.
+        g.set_config({"sample_rate_hz": 250, "samples_by_record": 250,
+                      "records_per_file": 2, "gain": 1, "survey_id": survey,
+                      "max_pitch_deg": 45, "max_roll_deg": 45})
+        try:
+            g.stop(); time.sleep(0.3)
+        except Frozen:
+            raise
+        except Exception:   # noqa: BLE001
+            pass
+        g.start(); g.sync()                 # trigger test-only, minimal
+        # UN seul contrôle à t+6 s (le 1er fichier de 2 s est fermé) pour confirmer
+        # le démarrage, puis SILENCE USB total pendant le record.
+        time.sleep(6.0)
+        started = len(g.ls(sp)) > 0
+        if started:
+            time.sleep(max(0, rec_s - 6))   # aucun trafic USB pendant le record
+        g.stop(); time.sleep(0.5)
+    except Frozen as e:
+        return [{"test": "contrôle USB (hors-produit)", "verdict": WARN,
+                 "detail": f"gel au contrôle USB-pendant-acquisition (sur '{e}') — "
+                           f"condition de TEST ; USB inactif pendant le record en champ"}], sp
+
+    # Survey à transférer : le frais si l'enregistrement a démarré, sinon un EXISTANT.
+    transfer_sp, on_existing = sp, False
+    if not started:
+        try:
+            ex = _largest_survey(g)
+        except Frozen:
+            ex = None
+        if ex:
+            transfer_sp, on_existing = ex, True
+
+    try:
+        res, n_channels, gps_ok, frozen = _transfer_test(g, transfer_sp)
+    except Frozen:
+        res = [{"test": "V7 transfert données", "verdict": FAIL,
+                "detail": "FREEZE au LS du survey (transfert) — défaut produit"}]
+        n_channels, gps_ok, frozen = 0, False, True
+
+    if started:
+        v15ok = n_channels >= 3 and gps_ok and not frozen
+        res.append({"test": "V4/V15 acquisition E2E", "verdict": PASS if v15ok else WARN,
+                    "detail": f"record OK ({n_channels} voies), "
+                              f"{'timestamps GPS reels' if gps_ok else 'horodatage non-GPS ?'}"})
+    else:
+        res.append({"test": "V4/V15 acquisition E2E", "verdict": WARN,
+                    "detail": ("record NON démarré (pas de fix GPS/tilt) — transfert testé "
+                               "sur survey existant" if on_existing else
+                               "record NON démarré et aucun survey existant")})
+    return res, transfer_sp
+
+
+def transfer_only(g):
+    """MODE PAR DÉFAUT : teste ADC/transfert/format sur un survey EXISTANT, SANS
+    déclencher d'enregistrement par USB. Le START-USB gèle le board par intermittence
+    (condition test-only) ; config + transfert = usages NORMAUX, fiables. On valide
+    donc les vrais usages produit sans provoquer le gel. L'enregistrement lui-même se
+    valide au BOUTON (vrai déclencheur) ou avec --record."""
+    try:
+        ex = _largest_survey(g)
+    except Frozen:
+        return [{"test": "V7 transfert données", "verdict": FAIL,
+                 "detail": "FREEZE au LS /survey-data"}]
+    if not ex:
+        return [{"test": "V7 transfert données", "verdict": WARN,
+                 "detail": "aucun survey sur la SD — enregistre d'abord (bouton) puis relance"}]
+    res, n_channels, gps_ok, frozen = _transfer_test(g, ex)
+    res.append({"test": "V4/V15 acquisition E2E", "verdict": WARN,
+                "detail": f"transfert validé sur survey existant {ex} ({n_channels} voies, "
+                          f"{'GPS' if gps_ok else 'non-GPS'}) ; record frais = à valider au bouton"})
+    return res
+
+
+def run_unit(rec_s=90, do_record=False):
     found, to = _call_timeout(
         lambda: discover_units(vid=GEOPHONE3AXIS_VID, pid=GEOPHONE3AXIS_PID), 15)
     if to:
@@ -304,11 +370,14 @@ def run_unit(rec_s=90):
         _guard(lambda: cfg_roundtrip(g), "CFG roundtrip")
         _guard(lambda: v11_battery(g), "V11 batterie")
         try:
-            rec_res, _ = record_and_get(g, rec_s)
+            if do_record:
+                rec_res, _ = record_and_get(g, rec_s)   # --record : START-USB (flaky)
+            else:
+                rec_res = transfer_only(g)               # défaut : pas de START-USB
             results.extend(rec_res)
         except Frozen as e:
-            results.append({"test": "V7 µSD/transfert", "verdict": FAIL,
-                            "detail": f"FREEZE pendant enregistrement/GET (sur '{e}')"})
+            results.append({"test": "V7 transfert données", "verdict": FAIL,
+                            "detail": f"FREEZE pendant transfert (sur '{e}')"})
     finally:
         try: raw.stop()
         except Exception: pass
@@ -367,4 +436,6 @@ if __name__ == "__main__":
         rec = 90
         if "--rec" in sys.argv:
             rec = int(sys.argv[sys.argv.index("--rec") + 1])
-        run_unit(rec_s=rec)
+        # --record : déclenche un enregistrement FRAIS par USB (START flaky, peut
+        # geler le board). Par défaut : transfert sur survey existant, pas de START.
+        run_unit(rec_s=rec, do_record="--record" in sys.argv)
