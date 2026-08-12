@@ -113,8 +113,10 @@ class ThreeAxisApp(tk.Tk):
         # servo ~20 s + dwell 100 s) pour un signal minuscule (roll-off f², SNR
         # pourri) et un grand déplacement (~9,5 mm, risque butée). 0,2 Hz garde le
         # bord de bande ANT à coût raisonnable (dwell ~50 s, déplacement ~5 mm).
-        # Rajouter 0,1 à la main pour un run ponctuel. Balayé HAUTE→BASSE (anti-butée).
-        self.freqs = tk.StringVar(value="0.2, 0.5, 1, 2, 5, 10, 20, 50, 70, 100")
+        # DENSIFIÉ autour de f0 (3, 4, 6, 8 Hz) : un fit (G0, f0, ζ) propre exige
+        # plusieurs points DANS la résonance (2–8 Hz) — sinon le fit troque f0
+        # contre la pente r². Rajouter 0,1 à la main au besoin. HAUTE→BASSE (anti-butée).
+        self.freqs = tk.StringVar(value="0.2, 0.5, 1, 2, 3, 4, 5, 6, 8, 10, 20, 50, 70, 100")
         ttk.Entry(fs, textvariable=self.freqs, width=18).grid(row=0, column=1, sticky="w")
         ttk.Label(fs, text="Enveloppe :").grid(row=1, column=0, sticky="w")
         self.envelope = tk.StringVar(value="0.3")
