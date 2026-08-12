@@ -24,6 +24,7 @@ VALIDÉ contre un vrai `.dat` (unité CG0-000008, 2026-08-10) :
     dans simplemseed 1.0.2, ne pas s'y fier.
 """
 
+import os
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -95,6 +96,11 @@ def read_dat(path: str) -> list[Channel3Axis]:
     """
     try:
         import simplemseed
+        from simplemseed.mseed3 import Miniseed3Exception
+        try:
+            from simplemseed.exceptions import CodecException
+        except ImportError:                      # emplacement selon version
+            from simplemseed import CodecException
     except ImportError:
         raise ImportError(
             "Lecture des .dat 3 axes : simplemseed requis (miniSEED v3). "
@@ -103,8 +109,25 @@ def read_dat(path: str) -> list[Channel3Axis]:
 
     file_meta: dict = {}
     by_ch: dict[str, list] = {}      # voie -> [(start_ns, sample_rate, samples)]
+    skipped = 0
+    # Lecture TOLÉRANTE : un record corrompu (CRC/codec — corruption de transfert
+    # GET/CDC ou queue tronquée au STOP) ne doit PAS jeter tout le fichier ni tout
+    # le run. `readMSeed3Records` lève dès le 1er record invalide et le générateur
+    # meurt ; on garde alors tous les BONS records lus avant, et on abandonne la
+    # suite de CE fichier seulement (les autres `.dat` restent lus normalement).
     with open(path, "rb") as fp:
-        for rec in simplemseed.readMSeed3Records(fp):
+        it = simplemseed.readMSeed3Records(fp)
+        while True:
+            try:
+                rec = next(it)
+            except StopIteration:
+                break
+            except (Miniseed3Exception, CodecException) as e:
+                skipped += 1
+                print(f"[dat_reader] {os.path.basename(path)} : record corrompu "
+                      f"ignoré ({e}) — {sum(len(v) for v in by_ch.values())} bons "
+                      f"records conservés.")
+                break
             caur = _caurtech(rec)
             if rec.header.numSamples == 0:
                 # Record d'en-tête fichier : métadonnées globales.
@@ -114,6 +137,8 @@ def read_dat(path: str) -> list[Channel3Axis]:
             samples = np.asarray(rec.decompress(), dtype=np.int32)
             by_ch.setdefault(ch, []).append(
                 (_start_ns(rec), float(rec.header.sampleRate), samples))
+    if skipped:
+        file_meta = {**file_meta, "records_skipped": skipped}
 
     channels: list[Channel3Axis] = []
     for ch, segs in sorted(by_ch.items()):

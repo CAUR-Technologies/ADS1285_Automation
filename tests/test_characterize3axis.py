@@ -155,6 +155,39 @@ def test_start_unit_verify_aborts_when_no_files():
         assert u.stopped, "doit STOP l'unité avant d'abandonner"
 
 
+def test_read_dat_tolerates_corrupt_record():
+    """Un record corrompu (CRC fail — corruption de transfert GET/CDC observée sur
+    1 fichier/134) ne doit PAS jeter tout le fichier : on garde les BONS records lus
+    avant, et le run reste exploitable."""
+    try:
+        from simplemseed import MSeed3Record, MSeed3Header
+    except ImportError:
+        return   # simplemseed absent : test sauté
+    import datetime, tempfile, os
+    from equipment.geophone3axis.dat_reader import read_dat
+
+    def _rec(ch, t):
+        h = MSeed3Header(); h.sampleRatePeriod = 250.0
+        h.starttime = datetime.datetime(2026, 8, 12, 14, 0, t, tzinfo=datetime.timezone.utc)
+        return MSeed3Record(h, "FDSN:XX_STA_00_H_H_1",
+                            np.arange(250, dtype=np.int32),
+                            extraHeaders={"caurtech": {"channel": ch}}).pack()
+
+    good1, good2 = _rec("1", 0), _rec("1", 1)
+    bad = bytearray(_rec("1", 2)); bad[-4] ^= 0xFF          # corrompt la data → CRC fail
+    path = os.path.join(tempfile.gettempdir(), "test_corrupt_3axis.dat")
+    with open(path, "wb") as fp:
+        fp.write(good1 + good2 + bytes(bad))
+    try:
+        chans = read_dat(path)
+    finally:
+        os.remove(path)
+    assert chans, "doit récupérer au moins une voie malgré le record corrompu"
+    c = chans[0]
+    assert len(c.data) == 500, (len(c.data), "les 2 bons records (2×250) conservés")
+    assert c.meta["file"].get("records_skipped") == 1
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
