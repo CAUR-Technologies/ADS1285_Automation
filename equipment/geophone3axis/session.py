@@ -227,7 +227,13 @@ class Characterize3AxisSession:
 
         ⚠️ Matériel complet requis (accéléro NI + 1PPS ProPak sur PFI0 + GNSS NMEA)
         et unité en cours d'enregistrement (`start_unit`). Balaye HAUTE→BASSE
-        (sécurité anti-butée). À VALIDER au banc — la corrélation, elle, est testée.
+        (sécurité anti-butée).
+
+        SÉRIALISATION NI (fix -50103) : le servo `set_frequency_safe` ouvre+FERME sa
+        propre tâche accéléro ; on capture la référence 1PPS APRÈS lui, par fréquence,
+        via NOTRE tâche continue — jamais les deux tâches sur ai# en même temps. Le
+        shaker vibre steady à f (sortie ON) pendant la capture. Drain fréquent (→ pas
+        de -200279 buffer overflow).
         """
         import time as _t
         import numpy as _np
@@ -242,50 +248,56 @@ class Characterize3AxisSession:
         if sens_v_per_g is None:
             sens_v_per_g = accel.sensitivity_v_per_g
 
-        ai = nidaqmx.Task()
-        ai.ai_channels.add_ai_voltage_chan(
-            f"{accel._device}/{ch_name}",
-            terminal_config=TerminalConfiguration.RSE, min_val=-10.0, max_val=10.0)
-        ai.timing.cfg_samp_clk_timing(rate=ai_rate, sample_mode=AcquisitionType.CONTINUOUS)
-
-        ref: list = []                       # échantillons volts (continu)
-        edge_idx: list = []                  # indices AI des fronts 1PPS
+        ref: list = []                       # échantillons volts (concaténés par palier)
+        edge_idx: list = []                  # indices (flux concaténé) des fronts 1PPS
         edge_sod: list = []                  # seconde UTC entière de chaque front
         schedule: list = []
-
-        def _drain():
-            data = ai.read(number_of_samples_per_channel=READ_ALL_AVAILABLE)
-            if data:
-                ref.extend(data if isinstance(data, list) else [data])
-            for s in self.pps.read_edges():
-                if self.gnss is not None:
-                    self.gnss.read_fix(timeout=0.2)
-                    sod = self.gnss.utc_sod()
-                    if sod is not None:
-                        edge_idx.append(int(s))
-                        edge_sod.append(round(sod))   # le front 1PPS = frontière de seconde
-
-        self.pps.start()
-        ai.start()
         try:
-            _t.sleep(0.5); _drain()          # amorçage
             for f in sorted(freqs, reverse=True):    # HAUTE→BASSE (anti-butée)
                 self.bench._check_stop()
-                exc = self.bench.set_frequency_safe(f)
+                exc = self.bench.set_frequency_safe(f)   # servo : ouvre+FERME la tâche accéléro
                 if exc.get("skipped"):
                     continue
-                _drain(); i0 = len(ref)
-                _t.sleep(dwell_s)
-                _drain(); i1 = len(ref)
-                schedule.append({"freq_hz": f, "sample_start": i0, "sample_end": i1})
+                # Shaker steady à f (sortie ON, tâche accéléro du banc fermée). On ouvre
+                # NOTRE acquisition continue courte pour capturer la référence datée 1PPS.
+                ai = nidaqmx.Task()
+                ai.ai_channels.add_ai_voltage_chan(
+                    f"{accel._device}/{ch_name}",
+                    terminal_config=TerminalConfiguration.RSE, min_val=-10.0, max_val=10.0)
+                ai.timing.cfg_samp_clk_timing(rate=ai_rate, sample_mode=AcquisitionType.CONTINUOUS)
+                i0 = len(ref)
+                self.pps.start(); ai.start()
+                try:
+                    t_end = _t.time() + dwell_s
+                    while _t.time() < t_end:
+                        _t.sleep(0.2)                # drain fréquent → pas d'overflow
+                        data = ai.read(number_of_samples_per_channel=READ_ALL_AVAILABLE)
+                        if data:
+                            ref.extend(data if isinstance(data, list) else [data])
+                        for s in self.pps.read_edges():
+                            if self.gnss is not None:
+                                self.gnss.read_fix(timeout=0.2)
+                                sod = self.gnss.utc_sod()
+                                if sod is not None:
+                                    edge_idx.append(int(s) + i0)   # → index dans le flux concaténé
+                                    edge_sod.append(round(sod))
+                    data = ai.read(number_of_samples_per_channel=READ_ALL_AVAILABLE)
+                    if data:
+                        ref.extend(data if isinstance(data, list) else [data])
+                finally:
+                    try: self.pps.stop()
+                    except Exception:            # noqa: BLE001
+                        pass
+                    try:
+                        ai.stop(); ai.close()
+                    except Exception:            # noqa: BLE001
+                        pass
+                schedule.append({"freq_hz": f, "sample_start": i0, "sample_end": len(ref)})
         finally:
             try:
                 self.bench._safe_shutdown()
             except Exception:               # noqa: BLE001
                 pass
-            _drain()
-            self.pps.stop()
-            ai.stop(); ai.close()
 
         n = len(ref)
         if edge_idx and edge_sod:
