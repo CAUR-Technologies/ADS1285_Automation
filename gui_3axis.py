@@ -108,12 +108,13 @@ class ThreeAxisApp(tk.Tk):
         fs = ttk.LabelFrame(left, text="4 · Balayage", padding=6)
         fs.pack(fill="x", pady=4)
         ttk.Label(fs, text="Fréquences (Hz) :").grid(row=0, column=0, sticky="w")
-        # Balayage par défaut 1–100 Hz (bande utile du géophone). Les BF < 1 Hz de la
-        # sweep mono-géophone sont RETIRÉES ici : à 0,1 Hz un palier prend ~4 min
-        # (fenêtres servo ~20 s + dwell 60 s), pour un signal minuscule (roll-off f²,
-        # SNR pourri) et un grand déplacement (risque butée). Les rajouter à la main
-        # si besoin. Balayé HAUTE→BASSE (anti-butée).
-        self.freqs = tk.StringVar(value="1, 2, 5, 10, 20, 50, 70, 100")
+        # Balayage par défaut 0,2–100 Hz (bande utile du géophone). SEUL le 0,1 Hz
+        # de la sweep mono-géophone est RETIRÉ : un palier y prend ~4 min (fenêtres
+        # servo ~20 s + dwell 100 s) pour un signal minuscule (roll-off f², SNR
+        # pourri) et un grand déplacement (~9,5 mm, risque butée). 0,2 Hz garde le
+        # bord de bande ANT à coût raisonnable (dwell ~50 s, déplacement ~5 mm).
+        # Rajouter 0,1 à la main pour un run ponctuel. Balayé HAUTE→BASSE (anti-butée).
+        self.freqs = tk.StringVar(value="0.2, 0.5, 1, 2, 5, 10, 20, 50, 70, 100")
         ttk.Entry(fs, textvariable=self.freqs, width=18).grid(row=0, column=1, sticky="w")
         ttk.Label(fs, text="Enveloppe :").grid(row=1, column=0, sticky="w")
         self.envelope = tk.StringVar(value="0.3")
