@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rapport go/no-go — Acceptation prototypes géophone</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1c2430; --muted:#5b6472; --line:#e4e8ee;
+    --accent:#1f5fbf; --pass:#1a7f45; --pass-bg:#e6f4ec; --warn:#9a6b00; --warn-bg:#fbf1d9;
+    --fail:#b3261e; --fail-bg:#fbe6e4; --na:#7a828e; --na-bg:#eef1f4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 20px 60px}
+  header{border-bottom:2px solid var(--line);padding-bottom:20px;margin-bottom:24px}
+  h1{font-size:24px;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:14px}
+  .verdict{display:inline-flex;align-items:center;gap:10px;margin-top:16px;
+    background:var(--pass-bg);color:var(--pass);border:1px solid #bfe2ce;
+    padding:10px 18px;border-radius:10px;font-weight:700;font-size:18px}
+  .verdict .dot{width:12px;height:12px;border-radius:50%;background:var(--pass)}
+  h2{font-size:17px;margin:32px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  p{margin:10px 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  .lead{font-size:15px}
+  .kpis{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
+  .kpi{flex:1;min-width:120px;background:var(--card);border:1px solid var(--line);
+    border-radius:10px;padding:14px 16px;text-align:center}
+  .kpi .n{font-size:26px;font-weight:800;line-height:1}
+  .kpi .l{font-size:12px;color:var(--muted);margin-top:6px;text-transform:uppercase;letter-spacing:.03em}
+  .kpi.pass .n{color:var(--pass)} .kpi.warn .n{color:var(--warn)} .kpi.fail .n{color:var(--fail)}
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;margin:14px 0}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:640px}
+  th,td{padding:9px 10px;text-align:center;border-bottom:1px solid var(--line)}
+  th{background:#f0f3f7;font-weight:600;color:var(--muted);position:sticky;top:0}
+  td.serial{text-align:left;font-weight:600;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .b{display:inline-block;min-width:52px;padding:3px 8px;border-radius:6px;font-weight:700;font-size:12px}
+  .pass{background:var(--pass-bg);color:var(--pass)} .warn{background:var(--warn-bg);color:var(--warn)}
+  .fail{background:var(--fail-bg);color:var(--fail)} .na{background:var(--na-bg);color:var(--na)}
+  ul{margin:10px 0;padding-left:22px} li{margin:6px 0}
+  .tag{display:inline-block;background:#eef3fb;color:var(--accent);border:1px solid #d3e1f5;
+    border-radius:6px;padding:2px 8px;font-size:12px;font-weight:600;margin-right:6px}
+  .excl{border-left:4px solid var(--warn);background:var(--warn-bg)}
+  code{background:#eef1f4;padding:1px 5px;border-radius:4px;font-size:12.5px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--line);
+    color:var(--muted);font-size:12.5px}
+  @media print{body{background:#fff}.card,.kpi,.tablewrap{break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Acceptation produit — prototypes géophone CAUR</h1>
+    <div class="sub">Rapport go/no-go · campagne 2026-08 · firmware de test <code>0.1.0.211 / dae370c+</code></div>
+    <div class="verdict"><span class="dot"></span> VERDICT : GO — design validé</div>
+  </header>
+
+  <div class="card lead">
+    Les <strong>8 unités en configuration production</strong> passent toutes l'acceptation
+    (<strong>1 PASS, 7 WARN, 0&nbsp;FAIL</strong>) et la checklist manuelle.
+    <strong>Aucun défaut de design bloquant.</strong> Les seuls écarts (WARN) sont
+    <strong>systématiques</strong> — identiques sur toute la flotte — et relèvent de
+    <strong>correctifs firmware</strong> déjà backlogés, pas de défauts matériels par unité.
+    Une 9ᵉ unité (CG0-000008) est <strong>exclue</strong> car modifiée (résistances d'entrée retirées).
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="n">8</div><div class="l">unités prod validées</div></div>
+    <div class="kpi pass"><div class="n">1</div><div class="l">PASS</div></div>
+    <div class="kpi warn"><div class="n">7</div><div class="l">WARN</div></div>
+    <div class="kpi fail"><div class="n">0</div><div class="l">FAIL</div></div>
+  </div>
+
+  <h2>Périmètre &amp; méthode</h2>
+  <ul>
+    <li><strong>9 prototypes</strong> flashés avec un firmware de test <strong>uniforme</strong>
+      (<code>0.1.0.211 / dae370c+</code>, config <code>test-bench.conf</code>), flash par USB DFU.</li>
+    <li><strong>Acceptation automatisée</strong> (USB seul, sans shaker) : V1/V13/V6/CFG/V11/V7/V2/V8,
+      mappés sur la matrice de validation matérielle V1–V15.</li>
+    <li><strong>Checklist manuelle validée</strong> : V9 (USB-MSD), V10 (LEDs), V15 (enregistrement réel au bouton).</li>
+  </ul>
+
+  <h2>Résultats flotte — 8 unités config-production</h2>
+  <div class="tablewrap">
+  <table>
+    <thead><tr>
+      <th style="text-align:left">Unité</th><th>Overall</th>
+      <th>V1</th><th>V13</th><th>V6</th><th>CFG</th><th>V11</th><th>V7</th><th>V2</th><th>V8</th>
+    </tr></thead>
+    <tbody>
+      <tr><td class="serial">CG0-000001</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="serial">CG0-000002</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="serial">CG0-000003</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="serial">CG0-000004</td><td><span class="b pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="pass">✓</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="serial">CG0-000005</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="serial">CG0-000006</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="serial">CG0-000007</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="serial">CG0-000009</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td class="warn">⚠</td><td>✓</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="sub">Légende : ✓ PASS · ⚠ WARN · ✗ FAIL. Résultats bruts : <code>data/acceptance/*.json</code>.</p>
+
+  <h2>Ce qui est validé</h2>
+  <ul>
+    <li><span class="tag">V1 · V13</span> Démarrage stable ; firmware <strong>homogène</strong> sur les 9 (<code>0.1.0.211/dae370c+</code>, hwrev 1).</li>
+    <li><span class="tag">V6</span> IMU : |g| ≈ 1,00 (0,8–1,2) sur toutes.</li>
+    <li><span class="tag">CFG</span> Config par USB fiable (aller-retour).</li>
+    <li><span class="tag">V7</span> Transfert USB fiable — sur gros échantillons <strong>0,00 % (004), 0,20 % (001, 3488 records), 0,43 % (006, 1849 records)</strong> de records corrompus, <strong>tous récupérés</strong>.</li>
+    <li><span class="tag">V2 · V8</span> 3 voies ADC présentes et vivantes ; miniSEED valide.</li>
+    <li><span class="tag">V9 · V10 · V15</span> Manuel : USB-MSD monte, LEDs répondent, enregistrement réel au bouton OK.</li>
+  </ul>
+
+  <h2>Écarts (WARN) — systématiques, correctifs firmware</h2>
+  <div class="card">
+    <p>Ces écarts sont <strong>identiques sur toute la flotte</strong> → caractéristiques systématiques,
+       <strong>pas des défauts par unité</strong>. Non bloquants pour le design.</p>
+    <ul>
+      <li><strong>Transfert CDC</strong> : ~0,2–0,5 % de records corrompus (CRC/UTF-8), <strong>récupérés</strong>
+        côté hôte. <em>(La production récupère par MSD, pas GET.)</em></li>
+      <li><strong>Jauge batterie</strong> : lit faux — <strong>sous-estime</strong> (74 % à batterie
+        <strong>pleine 7,57 VDC</strong>) et glitche à <code>1</code>/<code>2</code>.</li>
+      <li><strong>CG0-000009 · V2</strong> : saturation d'un <em>ancien</em> enregistrement à forte amplitude
+        (l'amplitude reflète le run, pas la santé de la voie).</li>
+    </ul>
+    <p class="sub">Backlog firmware : <code>geophones-firmware/doc/test-bench-to-production.md</code></p>
+  </div>
+
+  <h2>Unité exclue</h2>
+  <div class="card excl">
+    <strong>CG0-000008 — MODIFIÉE</strong> (résistances d'entrée ADC retirées, board de caractérisation),
+    non représentative de la production. En enregistrement : <strong>LED D13 (Health) rouge</strong>
+    = <code>RUNTIME_ERROR</code> après quelques secondes → record stoppé (cause plausible : entrées ADC
+    haute-impédance suite au retrait → faute ADS1285/acquisition, <strong>conséquence de la mod</strong>).
+    Batterie mesurée <strong>pleine (7,57 V)</strong>. → rétablir la config prod puis ré-accepter, ou statuer « exclu ».
+  </div>
+
+  <h2>Décision &amp; suites</h2>
+  <p><strong>GO pour le design</strong> — les 8 unités production passent (aucun FAIL). Conditions de suivi :</p>
+  <ul>
+    <li><strong>Correctifs firmware</strong> (non bloquants) : jauge batterie ; robustesse transfert CDC ;
+      START/STOP idempotents BLE ; écriture SD.</li>
+    <li><strong>CG0-000008</strong> : rétablir la config prod et ré-accepter, ou statuer « exclu ».</li>
+    <li><strong>Hors périmètre, à traiter plus tard</strong> : corrélation temporelle (TIME-05, précision
+      d'horodatage) ; calibration fine + diffusion StationXML (pôles/zéros) et convention SID FDSN.</li>
+  </ul>
+
+  <footer>
+    Rapport généré à partir de <code>docs/go-no-go-report.md</code> ·
+    banc de caractérisation géophones · firmware <code>gp/fix-cdc-get-large-tx @ b90268b</code>.
+  </footer>
+
+</div>
+</body>
+</html>
