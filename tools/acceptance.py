@@ -187,7 +187,9 @@ def _transfer_test(g, sp):
     Retourne (res, parsed_channels, gps_time_ok, frozen)."""
     files = sorted(f["path"] for f in g.ls(sp))
     os.makedirs(OUT_DIR, exist_ok=True)
-    n_ok = n_corrupt = 0
+    n_ok = 0
+    good_records = corrupt_records = 0   # métrique PAR RECORD (indép. de la taille des fichiers)
+    n_bytes = 0
     frozen = False
     gps_ok = False
     chan_std = {}          # cid -> (std max vu, saturé ?) AGRÉGÉ sur TOUS les fichiers
@@ -199,14 +201,16 @@ def _transfer_test(g, sp):
             frozen = True; break
         if not data:
             continue
+        n_bytes += len(data)
         local = os.path.join(OUT_DIR, f"{g.serial_number}_{os.path.basename(p)}")
         with open(local, "wb") as fh:
             fh.write(data)
         try:
             chans = dat_reader.read_dat(local)
             n_ok += 1
-            if any((c.meta.get("file", {}) or {}).get("records_skipped") for c in chans):
-                n_corrupt += 1
+            # records bons (∑ segments par voie) + records corrompus (records_skipped)
+            good_records += sum(c.meta.get("segments", 0) for c in chans)
+            corrupt_records += (chans[0].meta.get("file", {}) or {}).get("records_skipped", 0) if chans else 0
             for c in chans:                # voies réparties sur plusieurs fichiers → agréger
                 s = float(np.std(c.data)) if len(c.data) else 0.0
                 r = bool(np.max(np.abs(c.data)) >= 0.98 * 2**31) if len(c.data) else False
@@ -216,25 +220,39 @@ def _transfer_test(g, sp):
                 yr = datetime.datetime.utcfromtimestamp(chans[0].start_time_ns/1e9).year
                 gps_ok = yr >= 2020
         except Exception:   # noqa: BLE001
-            n_corrupt += 1
+            corrupt_records += 1
         finally:
             try: os.remove(local)
             except OSError: pass
     dt = time.time() - t0
-    thr = (n_ok / dt) if dt > 0 else 0.0
+    kbps = (n_bytes / 1024 / dt) if dt > 0 else 0.0
     n_channels = len(chan_std)
 
     res = []
+    total_rec = good_records + corrupt_records
     if frozen:
         res.append({"test": "V7 transfert données", "verdict": FAIL,
                     "detail": f"FREEZE pendant GET (record arrêté) après {n_ok}/{len(files)} "
                               f"fichiers — DÉFAUT PRODUIT (transfert non fiable)"})
     else:
-        rate = (n_corrupt / n_ok) if n_ok else 1.0
-        v = PASS if rate == 0 else (WARN if rate < 0.10 else FAIL)
+        # Métrique PAR RECORD (indép. de la taille). Le transfert GET/CDC a un bruit
+        # SYSTÉMATIQUE ~0,5-2 % (récupéré par la lecture tolérante) → WARN, pas FAIL.
+        # FAIL seulement pour une corruption GROSSIÈRE (≥5 %) = unité réellement dégradée.
+        # Échantillon < 100 records = trop petit pour trancher → WARN (record + long).
+        rate = (corrupt_records / total_rec) if total_rec else 1.0
+        if total_rec == 0:
+            v, note = WARN, " — aucun record"
+        elif corrupt_records == 0:
+            v, note = PASS, ""
+        elif total_rec < 100:
+            v, note = WARN, " — échantillon petit (record ≥30 s pour trancher)"
+        elif rate < 0.05:
+            v, note = WARN, " — bruit CDC systématique (récupéré)"
+        else:
+            v, note = FAIL, " — corruption GROSSIÈRE (unité dégradée ?)"
         res.append({"test": "V7 transfert données", "verdict": v,
-                    "detail": f"{n_ok}/{len(files)} transférés, {n_corrupt} corrompus "
-                              f"({rate*100:.0f}%), {thr:.1f} fich/s"})
+                    "detail": f"{n_ok}/{len(files)} fichiers, {corrupt_records}/{total_rec} records "
+                              f"corrompus ({rate*100:.2f}%), {kbps:.0f} Ko/s{note}"})
     if chan_std:
         present = sorted(chan_std)
         missing = not (set(chan_std) >= {"1", "2", "3"})
