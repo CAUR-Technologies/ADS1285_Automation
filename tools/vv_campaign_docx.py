@@ -7,7 +7,7 @@ Lancer :  python tools/vv_campaign_docx.py
 import os
 from docx import Document
 from docx.shared import Pt, Cm, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,20 +31,28 @@ for lvl in ("Heading 1", "Heading 2", "Heading 3", "Title"):
 sec = doc.sections[0]
 for m in ("top_margin", "bottom_margin", "left_margin", "right_margin"):
     setattr(sec, m, Cm(2.1))
-hp = sec.header.paragraphs[0]
-hp.alignment = WD_ALIGN_PARAGRAPH.LEFT
-# taquet de tabulation aligne a droite (largeur utile = 21 - 2*2,1 = 16,8 cm)
-hp.paragraph_format.tab_stops.add_tab_stop(Cm(16.8), WD_TAB_ALIGNMENT.RIGHT)
-run = hp.add_run()
+# En-tete en tableau 2 cellules (sans bordure) : GDD a gauche, CAUR cale a droite.
+htab = sec.header.add_table(rows=1, cols=2, width=Cm(16.8))
+htab.autofit = False
+htab.allow_autofit = False
+cell_l, cell_r = htab.rows[0].cells
+cell_l.width = Cm(11.3)
+cell_r.width = Cm(5.5)
+# gauche : logo GDD + raison sociale
+lp = cell_l.paragraphs[0]
+lp.alignment = WD_ALIGN_PARAGRAPH.LEFT
+lrun = lp.add_run()
 if os.path.exists(LOGO):
-    run.add_picture(LOGO, height=Cm(1.05))
-r2 = hp.add_run("    Instrumentation GDD inc.")
+    lrun.add_picture(LOGO, height=Cm(1.05))
+r2 = lp.add_run("    Instrumentation GDD inc.")
 r2.bold = True
 r2.font.size = Pt(11)
 r2.font.color.rgb = BLUE
-# logo CAUR (produit) a droite de l'en-tete
+# droite : logo CAUR (produit), aligne a droite
+rp = cell_r.paragraphs[0]
+rp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
 if os.path.exists(LOGO_CAUR):
-    hp.add_run("\t").add_picture(LOGO_CAUR, height=Cm(1.05))
+    rp.add_run().add_picture(LOGO_CAUR, height=Cm(1.10))
 fp = sec.footer.paragraphs[0]
 fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
 fr = fp.add_run("Instrumentation GDD inc.  ·  Campagne V&V — enregistreur geophone CAUR  ·  Confidentiel")
