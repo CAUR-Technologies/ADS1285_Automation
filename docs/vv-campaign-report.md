@@ -10,17 +10,22 @@ config `test-bench.conf`), flashé sur les 9 prototypes par USB DFU.
 **GO 🟢.** Les **8 unités config-production** passent l'acceptation : **7 PASS, 1 WARN,
 0 FAIL** + checklist manuelle. Aucun défaut de **design** bloquant. La 9ᵉ (CG0-000008)
 est **exclue** (board modifié — résistances d'entrée retirées). Les écarts relevés sont
-des **correctifs firmware** (backlog), pas des défauts matériels. Trois tests (V3, V5,
-V14) restent **non couverts** (voir §7) ; ils ne conditionnent pas le go/no-go design.
+des **correctifs firmware** (backlog), pas des défauts matériels. Le **bruit propre de la
+chaîne ADC est validé vs la fiche ADS1285** (±11 % sur 4 gains, §5.2). Seul **V14 (watchdog)**
+reste vraiment non couvert (trou firmware, §7) ; V3 et V5 sont caractérisés (voir §7). Aucun
+de ces points ne conditionne le go/no-go design.
 
 ## 2. Périmètre & méthode
 
 - **Acceptation automatisée** — `tools/acceptance.py` (USB seul, sans shaker, ~2 min/unité) :
   V1/V13/V6/CFG/V11/V7/V2/V8. Freeze-robuste (chaque commande sous timeout).
 - **Checklist manuelle** : V9 (USB-MSD), V10 (LEDs), V15 (enregistrement réel au bouton).
+- **Bruit propre ADC (ACQ-09)** : entrées court-circuitées, 4 gains, PSD Welch vs fiche
+  ADS1285 (§5.2 ; doc produit `bruit-plancher-v31.md`).
 - **Caractérisation métrologique** (banc shaker+GNSS+accéléro réf. NI) : réponse en
-  fréquence des géophones — *hors périmètre V&V produit* (calibration), documentée §5.
-- **Validation banc/instrumentation** : 1PPS, GNSS, corrélation temporelle (TIME-05).
+  fréquence des géophones — 3 axes (§5) + campagne 8 géophones mono-axe (§5.3).
+- **Validation banc/instrumentation** : 1PPS, GNSS, corrélation temporelle (TIME-05),
+  holdover PPS (§6).
 
 ## 3. Matrice de validation V1–V15
 
@@ -77,6 +82,60 @@ Géophone **UHS confirmé** ; Z nettement plus haut-Q (répété 2×, écarts �
 homogène ~155–160 sur les 3 axes → chaîne de mesure saine. *La diffusion pour l'ANT
 (StationXML pôles/zéros + convention SID FDSN, DATA-07) reste à cadrer avec le géophysicien.*
 
+> ⚠️ **Convention de pleine échelle à trancher (impacte ces sensibilités).** `equipment/
+> geophone3axis/dat_reader.py` convertit les counts avec **±2,5 V** à gain 1 (validé par la
+> sensibilité ST-2A 265 vs 260). Or le rapport de bruit produit (§5.2) valide **±VREF/2 =
+> ±2,048 V** par la concordance au **bruit datasheet** (±11 % sur 4 gains) — évidence plus
+> directe. Facteur **1,22** : si 2,048 V est correct, les plateaux ci-dessus tombent à
+> ~128–131. **À résoudre sur la fiche ADS1285** (FSR ±VREF/2 vs ±VREF/1,6384) avant toute
+> diffusion de sensibilité absolue.
+
+## 5.2 Bruit propre de la chaîne d'acquisition (ACQ-09) — ADS1285
+
+Validation du **bruit propre de l'électronique** (ADC + PGA), **entrées court-circuitées**
+(MUX ADS1285 en court, 400 Ω, aucun géophone), sur CG0-000006 — le test « design vs fiche
+ADS1285 ». 4 gains, 634–708 s, PSD Welch moyennée sur les 3 voies, comparé à la table 6-1
+de la fiche. *Doc canonique : `geophones-product/docs/bruit-plancher-v31.md`.*
+
+| Gain | Bruit mesuré | Fiche ADS1285 | Écart | Dynamique mesurée |
+|---|---|---|---|---|
+| **1** | **0,271 µVrms** | 0,25 | +8 % | **134,6 dB (22,1 bits)** |
+| 2 | 0,156 | 0,14 | +11 % | 133,3 dB |
+| 8 | 0,064 | 0,07 | −9 % | 129,0 dB |
+| 16 | 0,054 | 0,06 | −10 % | 124,4 dB |
+
+**Verdict : ✅ PASS — la chaîne se comporte comme le composant l'annonce** : les 4 gains
+collent à la fiche à **±11 %**, aucun bruit parasite ajouté par la carte (non trivial sur un
+1ᵉʳ proto). Les 3 voies sont équivalentes à quelques %. Bruit **1/f classique** (pente
+f^−0,44 mesurée), coude passant de **3,23 Hz (g1) à 0,15 Hz (g16)**.
+
+**Point d'attention ANT** : la bande **0,1–1 Hz** est entièrement en zone 1/f (bruit ×3–8
+vs plancher) — là où le géophone produit le moins. Le **gain corrige largement** (÷10–12 à
+g16, coude à 0,15 Hz) au prix de la pleine échelle (±128 mV). **Choix du gain de production
+ouvert** (ACQ-09) : gain 2 quasi gratuit (−1,2 dB), gain 16 le moins bruyant en bande ANT ;
+à trancher sur l'amplitude géophone max. *(Note : mesure faite sans géophone — à refaire
+capteur raccordé pour la chaîne complète.)*
+
+## 5.3 Campagne de calibration géophones (banc mono-axe V/H)
+
+**8 géophones** caractérisés en fréquence 0,1–100 Hz sur les **2 axes indépendants**
+(2026-06-05→08), `data/rapport_geophones_ALL_2026-06-08/`.
+
+| Géophone | Axe | Sensibilité | Spec | f0 / ζ | Verdict |
+|---|---|---|---|---|---|
+| ST-2A | V/H | 294 / 272 V/(m/s) | 260 | 3,3 / 5,9 Hz | excellent (datasheet ±5–13 %) |
+| HG-6 (XT UB / HB) | V/H | 38 / 36 | 28,8 | 5,4 / 6,5 Hz | conforme (classe HGS) |
+| HG-5VHS | V | 118 | 100 | 4,5 / 0,63 | conforme |
+| HG-2 U | V | 170 | ~50 (est.) | 3,6 / 0,52 | spec à confirmer |
+| VAS-200 / VAS-H-200 | V/H | ≥141 / ≥145 | 220 | anomalie | à rebalayer > 100 Hz |
+
+**Validation croisée** : 3 familles mesurées sur les **deux chaînes V/H totalement séparées**
+concordent à **±4 %** (ST-2A 294/272, HG-6 38/36, VAS 141/145) + ST-2A concorde à la
+datasheet (+5–13 %) → **métrologie des deux bancs validée**. **Plancher de bruit accéléro
+de réf.** : **V = 0,62 mg RMS · H = 0,57 mg RMS** (2026-05-28) — fixe la limite basse
+fréquence (sous ~1–2 Hz, SNR < 20 dB : course shaker ±38 mm + plancher + roll-off f² du
+géophone ; limite **physique**, non logicielle).
+
 ## 6. Validation banc / instrumentation
 
 - **1PPS** : ProPak sur PFI0 de la crate NI = **0,99 Hz** (stable).
@@ -90,6 +149,11 @@ homogène ~155–160 sur les 3 axes → chaîne de mesure saine. *La diffusion p
   mais **3,9 ms est le plancher de précision**. **Fix** : prescaler RTC async ~0 / sync
   ~32767 → **~30 µs** (×128), puis re-mesurer TIME-05. *(Backlog FW #8.)* Un **saut
   d'horodatage** occasionnel (~140 ms au démarrage) reste à qualifier.
+- **Holdover PPS (V5)** (`tools/v5_holdover.py`, antenne débranchée en cours d'acquisition) :
+  RTC en holdover → **dérive ~16 ppm (~1,4 s/jour)** sur le LSE seul (cohérent quartz montre).
+  **Discipline sous PPS** : pas de dérive tant que le fix tient (cadence collée à l'UTC). Le
+  **saut de recalage** à la reprise du fix n'a **pas encore été capturé** (warm start > fenêtre,
+  puis coupure batterie) → à reconfirmer, batterie chargée, 3 min après rebranchement.
 
 ## 7. Couverture — tests NON réalisés
 
@@ -102,7 +166,9 @@ homogène ~155–160 sur les 3 axes → chaîne de mesure saine. *La diffusion p
   splitté ; board 008 aux entrées accessibles) → cross-corrélation isole le seul décalage
   d'échantillonnage. *(Un décalage physique traduirait un défaut de portage de la ligne
   SYNC PD4 dans `geophone.dts`.)*
-- **V5 (dérive horloge / recalage PPS)** : partiel — lié à TIME-05 (précision non réglée).
+- **V5 (dérive horloge / recalage PPS)** : **bien caractérisé, partiel** — cadence stable
+  (250,07 Hz, suit l'UTC), holdover ~16 ppm mesuré, plancher 3,9 ms identifié (§6) ; reste à
+  **capturer visuellement le recalage** à la reprise du fix (batterie chargée + 3 min d'attente).
 - **V14 (watchdog / RTC au reboot)** : **watchdog ABSENT du firmware** (vérifié — aucun
   `CONFIG_WATCHDOG`/`CONFIG_TASK_WDT`/`wdt_feed`). C'est un **trou firmware**, pas une simple
   lacune de test : les gels observés (§8.4) ont exigé un **reset manuel** faute d'auto-reset.
@@ -117,8 +183,12 @@ Tracés au backlog firmware `geophones-firmware/doc/test-bench-to-production.md`
 
 1. **TX CDC non-bloquante** (`CDC_LARGE_TX`) → à porter en production (robustesse générale).
 2. **START/STOP idempotents BLE** → correctif contrôle app (le BLE reste un toggle).
-3. **Jauge batterie fausse** : sous-estime (74 % à batterie **pleine 7,57 VDC**) + glitches
-   à `1`/`2`. Recalibrer + filtrer.
+3. **Jauge batterie fausse (dans les deux sens)** : **sous-estime** en haut (74 % à batterie
+   pleine 7,57 VDC) ET **surestime** en bas (a lu `74 %` puis **s'est éteint** faute de charge,
+   2026-08-14) + glitches à `1`/`2`. Non fiable → recalibrer + filtrer. **Observation liée** :
+   le board **s'est éteint alors que l'USB était branché** → l'**USB ne semble pas alimenter/
+   charger** (à rapprocher du gotcha HW J8-USB-sans-GND) → autonomie = batterie seule, prévoir
+   un vrai chargeur. *(Backlog FW #3 + à vérifier côté HW.)*
 4. **Gel sous charge** : survenu autour de l'**USB-pendant-acquisition** (condition test-only ;
    en prod l'USB préempte l'acquisition). Reset manuel requis (cf. V14). À confirmer non-latent.
 5. **Écriture SD** : `open+append+close` par record (durable mais lourd) → keep-open + `fs_sync`
@@ -131,9 +201,15 @@ Tracés au backlog firmware `geophones-firmware/doc/test-bench-to-production.md`
 
 **GO pour le design** : flotte homogène, saine, aucun FAIL. Suivis :
 
-- **Correctifs firmware** (non bloquants) : jauge batterie (moyen) · BLE idempotent (haut) ·
-  intégrité+retry transfert CDC (moyen) · TX CDC en prod (moyen) · écriture SD (bas).
-- **Compléter la couverture** : V3 (synchro), V5/TIME-05 (précision horodatage), V14 (watchdog).
+- **Correctifs firmware** (non bloquants) : jauge batterie + charge/USB (moyen) · BLE idempotent
+  (haut) · intégrité+retry transfert CDC (moyen) · TX CDC en prod (moyen) · écriture SD (bas) ·
+  **prescaler RTC → 30 µs (haut, débloque TIME-05)** · **watchdog (haut, fiabilité terrain)**.
+- **Résoudre la convention de pleine échelle ADC** (±2,048 V vs ±2,5 V, §5.1) — impacte les
+  sensibilités 3 axes ; trancher sur la fiche ADS1285 avant diffusion.
+- **Compléter la couverture** : V3 (injection électrique), V5 (capturer le recalage PPS),
+  V14 (implémenter le watchdog).
+- **Choix du gain de production** (ACQ-09, §5.2) : arbitrer bruit BF vs pleine échelle sur
+  l'amplitude géophone max (mesure capteur raccordé).
 - **CG0-000008** : rétablir la config prod puis ré-accepter, ou statuer « exclu ».
 - **Calibration ANT** : StationXML + convention SID (DATA-07) avec le géophysicien.
 
