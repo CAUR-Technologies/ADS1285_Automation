@@ -83,7 +83,7 @@
     <tbody>
       <tr><td class="code">V1</td><td>Boot &amp; console</td><td><span class="st pass">PASS ×8</span></td><td>STATUS ×3, uptime monotone, pas de reboot</td></tr>
       <tr><td class="code">V2</td><td>ADS1285 ×3</td><td><span class="st pass">PASS ×8</span></td><td>3 voies vivantes ; ADC exercé à fond en caractérisation</td></tr>
-      <tr><td class="code">V3</td><td>Synchro ADC (≤1 éch.)</td><td><span class="st gap">NON couvert</span></td><td>nécessite signal commun + analyse de phase (infra TIME-05 prête)</td></tr>
+      <tr><td class="code">V3</td><td>Synchro ADC (≤1 éch.)</td><td><span class="st warn">partiel</span></td><td><strong>firmware aligne les 3 voies</strong> (horodatage inter-voies = <strong>0,000 éch</strong> sur fichiers propres) ; synchro ADC <strong>physique</strong> ≤1 éch <strong>non prouvée</strong> par le tap (confond la mécanique des 3 axes) → injection électrique commune requise</td></tr>
       <tr><td class="code">V4</td><td>GNSS (fix + 1PPS)</td><td><span class="st pass">PASS</span></td><td>unité LC86G <code>fix=1</code>, 4–7 sats, Montréal ; ProPak 1PPS/PFI0 = 0,99 Hz</td></tr>
       <tr><td class="code">V5</td><td>Horodatage (dérive/PPS)</td><td><span class="st warn">partiel</span></td><td>pipeline TIME-05 opérationnel ; <strong>précision à régler</strong></td></tr>
       <tr><td class="code">V6</td><td>IMU</td><td><span class="st pass">PASS ×8</span></td><td>STREAM, |g| ≈ 1,00 (0,8–1,2)</td></tr>

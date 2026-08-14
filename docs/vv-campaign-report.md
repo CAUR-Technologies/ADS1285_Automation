@@ -28,7 +28,7 @@ V14) restent **non couverts** (voir §7) ; ils ne conditionnent pas le go/no-go 
 |---|---|---|---|
 | **V1** | Boot & console | ✅ PASS (8) | STATUS ×3, uptime monotone, pas de reboot |
 | **V2** | ADS1285 ×3 | ✅ PASS (8) | 3 voies vivantes, non figées ; ADC exercé à fond en caractérisation (§5) |
-| **V3** | Synchro ADC (≤1 éch.) | ⛔ **NON couvert** | nécessite signal commun + analyse de phase (infra TIME-05 prête) |
+| **V3** | Synchro ADC (≤1 éch.) | 🟡 **partiel** | **firmware aligne les 3 voies** (horodatage inter-voies = **0,000 éch** sur fichiers propres, `tools/v3_sync.py`) ; synchro ADC **physique** ≤1 éch **non prouvée** par le tap (confond la mécanique des 3 axes) → injection électrique commune requise (§7) |
 | **V4** | GNSS (fix + 1PPS) | ✅ PASS | unité LC86G : `fix=1`, 4–7 sats, position Montréal ; ProPak 1PPS sur PFI0 = 0,99 Hz |
 | **V5** | Horodatage (dérive/PPS) | 🟡 **partiel** | pipeline TIME-05 opérationnel ; **précision à régler** (§6) |
 | **V6** | IMU | ✅ PASS (8) | STREAM, \|g\| ≈ 1,00 (0,8–1,2) |
@@ -89,8 +89,15 @@ homogène ~155–160 sur les 3 axes → chaîne de mesure saine. *La diffusion p
 
 ## 7. Couverture — tests NON réalisés
 
-- **V3 (synchro inter-voies ≤ 1 échantillon)** : non testé. Faisable avec le signal commun
-  du shaker + analyse de phase (infra TIME-05 prête).
+- **V3 (synchro inter-voies ≤ 1 échantillon)** : **partiel** (`tools/v3_sync.py`, tap sur
+  CG0-000006, 2026-08-14). Acquis : le **firmware horodate les 3 voies à l'identique**
+  (0,000 éch sur 3 fichiers propres). Le **tap ne peut pas** trancher la synchro ADC
+  physique sous-échantillon car les 3 axes filtrent le choc différemment (démontré :
+  voies 1 & 3 même en-tête mais enveloppes décalées de 1,7 éch = **mécanique pure**).
+  **Reste** : injecter le **même signal électrique dans les 3 entrées ADC** (Wavetek
+  splitté ; board 008 aux entrées accessibles) → cross-corrélation isole le seul décalage
+  d'échantillonnage. *(Un décalage physique traduirait un défaut de portage de la ligne
+  SYNC PD4 dans `geophone.dts`.)*
 - **V5 (dérive horloge / recalage PPS)** : partiel — lié à TIME-05 (précision non réglée).
 - **V14 (watchdog / RTC au reboot)** : **watchdog ABSENT du firmware** (vérifié — aucun
   `CONFIG_WATCHDOG`/`CONFIG_TASK_WDT`/`wdt_feed`). C'est un **trou firmware**, pas une simple
