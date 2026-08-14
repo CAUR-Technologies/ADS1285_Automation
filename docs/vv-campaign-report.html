@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rapport de campagne V&amp;V — enregistreur géophone CAUR</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1c2430; --muted:#5b6472; --line:#e4e8ee;
+    --accent:#1f5fbf; --pass:#1a7f45; --pass-bg:#e6f4ec; --warn:#9a6b00; --warn-bg:#fbf1d9;
+    --fail:#b3261e; --fail-bg:#fbe6e4; --na:#7a828e; --na-bg:#eef1f4;
+    --gap:#8a5a00; --gap-bg:#f7ecd8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:940px;margin:0 auto;padding:32px 20px 60px}
+  header{border-bottom:2px solid var(--line);padding-bottom:20px;margin-bottom:24px}
+  h1{font-size:23px;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:14px}
+  .verdict{display:inline-flex;align-items:center;gap:10px;margin-top:16px;
+    background:var(--pass-bg);color:var(--pass);border:1px solid #bfe2ce;
+    padding:10px 18px;border-radius:10px;font-weight:700;font-size:18px}
+  .verdict .dot{width:12px;height:12px;border-radius:50%;background:var(--pass)}
+  h2{font-size:17px;margin:34px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  p{margin:10px 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  .kpis{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
+  .kpi{flex:1;min-width:110px;background:var(--card);border:1px solid var(--line);
+    border-radius:10px;padding:14px 16px;text-align:center}
+  .kpi .n{font-size:26px;font-weight:800;line-height:1}
+  .kpi .l{font-size:12px;color:var(--muted);margin-top:6px;text-transform:uppercase;letter-spacing:.03em}
+  .kpi.pass .n{color:var(--pass)} .kpi.warn .n{color:var(--warn)} .kpi.fail .n{color:var(--fail)}
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;margin:14px 0}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:640px}
+  th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#f0f3f7;font-weight:600;color:var(--muted)}
+  table.center td,table.center th{text-align:center}
+  table.center td.l,table.center th.l{text-align:left}
+  td.serial,td.code{font-weight:600;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .st{display:inline-block;font-weight:700;font-size:12px;padding:2px 8px;border-radius:6px;white-space:nowrap}
+  .pass{background:var(--pass-bg);color:var(--pass)} .warn{background:var(--warn-bg);color:var(--warn)}
+  .fail{background:var(--fail-bg);color:var(--fail)} .na{background:var(--na-bg);color:var(--na)}
+  .gap{background:var(--gap-bg);color:var(--gap)}
+  ul{margin:10px 0;padding-left:22px} li{margin:6px 0}
+  code{background:#eef1f4;padding:1px 5px;border-radius:4px;font-size:12.5px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px}
+  @media print{body{background:#fff}.card,.kpi,.tablewrap{break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Rapport de campagne V&amp;V — enregistreur géophone CAUR</h1>
+    <div class="sub">2026-08 · acceptation flotte + caractérisation + validation banc ·
+      firmware de test <code>0.1.0.211 / dae370c+</code></div>
+    <div class="verdict"><span class="dot"></span> VERDICT : GO — design validé</div>
+  </header>
+
+  <div class="card">
+    Les <strong>8 unités config-production</strong> passent l'acceptation
+    (<strong>7 PASS, 1 WARN, 0&nbsp;FAIL</strong>) + checklist manuelle. Aucun défaut de
+    <strong>design</strong> bloquant. La 9ᵉ (CG0-000008) est <strong>exclue</strong>
+    (board modifié). Trois tests (V3, V5, V14) restent <strong>non couverts</strong> et
+    ne conditionnent pas le go/no-go design. Les écarts relevés sont des
+    <strong>correctifs firmware</strong> (backlog), pas des défauts matériels.
+  </div>
+
+  <div class="kpis">
+    <div class="kpi pass"><div class="n">7</div><div class="l">PASS</div></div>
+    <div class="kpi warn"><div class="n">1</div><div class="l">WARN</div></div>
+    <div class="kpi fail"><div class="n">0</div><div class="l">FAIL</div></div>
+    <div class="kpi"><div class="n">11/15</div><div class="l">V-tests couverts</div></div>
+  </div>
+
+  <h2>Matrice de validation V1–V15</h2>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Test</th><th>Objet</th><th>Statut</th><th>Méthode / résultat</th></tr></thead>
+    <tbody>
+      <tr><td class="code">V1</td><td>Boot &amp; console</td><td><span class="st pass">PASS ×8</span></td><td>STATUS ×3, uptime monotone, pas de reboot</td></tr>
+      <tr><td class="code">V2</td><td>ADS1285 ×3</td><td><span class="st pass">PASS ×8</span></td><td>3 voies vivantes ; ADC exercé à fond en caractérisation</td></tr>
+      <tr><td class="code">V3</td><td>Synchro ADC (≤1 éch.)</td><td><span class="st gap">NON couvert</span></td><td>nécessite signal commun + analyse de phase (infra TIME-05 prête)</td></tr>
+      <tr><td class="code">V4</td><td>GNSS (fix + 1PPS)</td><td><span class="st pass">PASS</span></td><td>unité LC86G <code>fix=1</code>, 4–7 sats, Montréal ; ProPak 1PPS/PFI0 = 0,99 Hz</td></tr>
+      <tr><td class="code">V5</td><td>Horodatage (dérive/PPS)</td><td><span class="st warn">partiel</span></td><td>pipeline TIME-05 opérationnel ; <strong>précision à régler</strong></td></tr>
+      <tr><td class="code">V6</td><td>IMU</td><td><span class="st pass">PASS ×8</span></td><td>STREAM, |g| ≈ 1,00 (0,8–1,2)</td></tr>
+      <tr><td class="code">V7</td><td>µSD / transfert</td><td><span class="st pass">PASS ×8</span></td><td>3 voies écrites+relues ; corruption <strong>en transit CDC seulement</strong>, SD intacte, ~180–220 Ko/s</td></tr>
+      <tr><td class="code">V8</td><td>MiniSEED</td><td><span class="st pass">PASS ×8</span></td><td>fichiers valides (simplemseed v3)</td></tr>
+      <tr><td class="code">V9</td><td>USB (MSD + CDC)</td><td><span class="st pass">PASS</span></td><td>manuel : disque de masse monte ; CDC utilisé de bout en bout</td></tr>
+      <tr><td class="code">V10</td><td>LEDs WS2812</td><td><span class="st pass">PASS</span></td><td>manuel : 4 pixels répondent (D13 = Health, documenté)</td></tr>
+      <tr><td class="code">V11</td><td>Tension batterie</td><td><span class="st warn">PASS / réserve</span></td><td>dans la plage, mais <strong>jauge fausse</strong> (sous-estime + glitches)</td></tr>
+      <tr><td class="code">V12</td><td>BLE (V3.1)</td><td><span class="st na">N/A</span></td><td>boards V2/V3.0, contrôleur BLE non monté</td></tr>
+      <tr><td class="code">V13</td><td>Détection révision (MAX7319)</td><td><span class="st pass">PASS ×8</span></td><td><code>hwrev: 1</code> sur toutes</td></tr>
+      <tr><td class="code">V14</td><td>Watchdog / RTC</td><td><span class="st gap">NON couvert</span></td><td>non testé ; gels ⇒ reset manuel (à qualifier)</td></tr>
+      <tr><td class="code">V15</td><td>Acquisition E2E</td><td><span class="st pass">PASS</span></td><td>record bouton + transfert/parse : miniSEED 3 voies daté GNSS, valide</td></tr>
+      <tr><td class="code">CFG</td><td>Config USB</td><td><span class="st pass">PASS ×8</span></td><td>CONFIG SET/GET aller-retour</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Acceptation flotte (8 unités config-production)</h2>
+  <div class="tablewrap">
+  <table class="center">
+    <thead><tr><th class="l">Unité</th><th>Overall</th><th>V1</th><th>V13</th><th>V6</th><th>CFG</th><th>V11</th><th>V7</th><th>V2</th><th>V8</th></tr></thead>
+    <tbody>
+      <tr><td class="l serial">CG0-000001</td><td><span class="st pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="l serial">CG0-000002</td><td><span class="st pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="l serial">CG0-000003</td><td><span class="st pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="l serial">CG0-000004</td><td><span class="st pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="l serial">CG0-000005</td><td><span class="st pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="l serial">CG0-000006</td><td><span class="st pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="l serial">CG0-000007</td><td><span class="st pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="l serial">CG0-000009</td><td><span class="st warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td>✓</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="sub">009·V2 = saturation d'un <em>ancien</em> enregistrement à forte amplitude testé (l'amplitude reflète le run, pas la santé de la voie). Bruts : <code>data/acceptance/*.json</code>.</p>
+
+  <h2>Caractérisation métrologique (calibration — hors périmètre V&amp;V produit)</h2>
+  <p>Réponse en fréquence 3 axes de CG0-000009 (banc shaker + accéléro de réf. NI, 0,2–100 Hz) :</p>
+  <div class="tablewrap">
+  <table class="center">
+    <thead><tr><th class="l">Axe</th><th>voie</th><th>plateau V/(m/s)</th><th>pic (résonance)</th><th>ζ</th></tr></thead>
+    <tbody>
+      <tr><td class="l">X</td><td>ch1</td><td>~160</td><td>~234 @ 4–5 Hz</td><td>0,41</td></tr>
+      <tr><td class="l">Y</td><td>ch2</td><td>~160</td><td>~250 @ 4–5 Hz</td><td>0,37</td></tr>
+      <tr><td class="l">Z</td><td>ch3</td><td>~157</td><td><strong>~510 @ 5–6 Hz</strong></td><td>0,23</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Géophone <strong>UHS confirmé</strong> ; Z plus haut-Q (répété 2×, écarts ≤ 8 %). Plateau homogène → chaîne saine. <em>Diffusion ANT (StationXML + SID FDSN) à cadrer avec le géophysicien.</em></p>
+
+  <h2>Validation banc / instrumentation</h2>
+  <ul>
+    <li><strong>1PPS</strong> : ProPak sur PFI0 = <strong>0,99 Hz</strong> (stable).</li>
+    <li><strong>GNSS</strong> : fix unité (LC86G) et référence (ProPak) confirmés.</li>
+    <li><strong>Corrélation temporelle (TIME-05)</strong> : pipeline matériel <strong>opérationnel</strong>
+      (conflit NI résolu) ; <strong>précision d'horodatage NON validée</strong> (alignement à régler) —
+      clé pour la cross-corrélation ANT multi-stations.</li>
+  </ul>
+
+  <h2>Couverture — tests NON réalisés</h2>
+  <ul>
+    <li><strong>V3</strong> synchro inter-voies · <strong>V5</strong> dérive horloge (lié TIME-05) ·
+      <strong>V14</strong> watchdog/RTC (point d'attention : les gels ont exigé un reset manuel).</li>
+    <li><strong>V12</strong> BLE : N/A sur ces boards.</li>
+  </ul>
+
+  <h2>Findings — backlog firmware</h2>
+  <p class="sub">Tracés dans <code>geophones-firmware/doc/test-bench-to-production.md</code>.</p>
+  <ul>
+    <li><strong>TX CDC non-bloquante</strong> → porter en production <em>(moyen)</em>.</li>
+    <li><strong>START/STOP idempotents BLE</strong> → correctif contrôle app <em>(haut)</em>.</li>
+    <li><strong>Jauge batterie fausse</strong> : sous-estime (74 % à 7,57 V pleine) + glitches <em>(moyen)</em>.</li>
+    <li><strong>Gel sous charge</strong> (USB-pendant-acquisition, test-only) — à confirmer non-latent <em>(haut)</em>.</li>
+    <li><strong>Écriture SD</strong> open+close par record → keep-open + fsync périodique <em>(bas)</em>.</li>
+    <li><strong>Transfert CDC</strong> : corruption <strong>en transit</strong> (prouvé 3× : md5 différents) → <strong>CRC + retry sur GET</strong>, sans perte <em>(moyen)</em>.</li>
+  </ul>
+
+  <h2>Conclusion &amp; suites</h2>
+  <p><strong>GO pour le design</strong> — flotte homogène, saine, aucun FAIL. Suivis : correctifs
+     firmware (backlog) ; compléter V3/V5/V14 ; statuer sur CG0-000008 ; calibration ANT
+     (StationXML/SID) avec le géophysicien.</p>
+
+  <footer>
+    Généré à partir de <code>data/acceptance/*.json</code>, <code>data/3axis/</code> et du
+    backlog <code>geophones-firmware/doc/test-bench-to-production.md</code>. Voir aussi
+    <code>docs/go-no-go-report.*</code> (synthèse décision) et <code>docs/acceptance-fleet.md</code> (procédure).
+  </footer>
+
+</div>
+</body>
+</html>

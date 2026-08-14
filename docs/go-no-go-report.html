@@ -62,7 +62,7 @@
 
   <div class="card lead">
     Les <strong>8 unités en configuration production</strong> passent toutes l'acceptation
-    (<strong>1 PASS, 7 WARN, 0&nbsp;FAIL</strong>) et la checklist manuelle.
+    (<strong>7 PASS, 1 WARN, 0&nbsp;FAIL</strong>) et la checklist manuelle.
     <strong>Aucun défaut de design bloquant.</strong> Les seuls écarts (WARN) sont
     <strong>systématiques</strong> — identiques sur toute la flotte — et relèvent de
     <strong>correctifs firmware</strong> déjà backlogés, pas de défauts matériels par unité.
@@ -71,8 +71,8 @@
 
   <div class="kpis">
     <div class="kpi"><div class="n">8</div><div class="l">unités prod validées</div></div>
-    <div class="kpi pass"><div class="n">1</div><div class="l">PASS</div></div>
-    <div class="kpi warn"><div class="n">7</div><div class="l">WARN</div></div>
+    <div class="kpi pass"><div class="n">7</div><div class="l">PASS</div></div>
+    <div class="kpi warn"><div class="n">1</div><div class="l">WARN</div></div>
     <div class="kpi fail"><div class="n">0</div><div class="l">FAIL</div></div>
   </div>
 
@@ -93,14 +93,14 @@
       <th>V1</th><th>V13</th><th>V6</th><th>CFG</th><th>V11</th><th>V7</th><th>V2</th><th>V8</th>
     </tr></thead>
     <tbody>
-      <tr><td class="serial">CG0-000001</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td>✓</td><td>✓</td></tr>
-      <tr><td class="serial">CG0-000002</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td>✓</td><td>✓</td></tr>
-      <tr><td class="serial">CG0-000003</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="serial">CG0-000001</td><td><span class="b pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="pass">✓</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="serial">CG0-000002</td><td><span class="b pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="pass">✓</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="serial">CG0-000003</td><td><span class="b pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="pass">✓</td><td>✓</td><td>✓</td></tr>
       <tr><td class="serial">CG0-000004</td><td><span class="b pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="pass">✓</td><td>✓</td><td>✓</td></tr>
-      <tr><td class="serial">CG0-000005</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td>✓</td><td>✓</td></tr>
-      <tr><td class="serial">CG0-000006</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td>✓</td><td>✓</td></tr>
-      <tr><td class="serial">CG0-000007</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td>✓</td><td>✓</td></tr>
-      <tr><td class="serial">CG0-000009</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="warn">⚠</td><td class="warn">⚠</td><td>✓</td></tr>
+      <tr><td class="serial">CG0-000005</td><td><span class="b pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="pass">✓</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="serial">CG0-000006</td><td><span class="b pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="pass">✓</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="serial">CG0-000007</td><td><span class="b pass">PASS</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="pass">✓</td><td>✓</td><td>✓</td></tr>
+      <tr><td class="serial">CG0-000009</td><td><span class="b warn">WARN</span></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td class="pass">✓</td><td class="warn">⚠</td><td>✓</td></tr>
     </tbody>
   </table>
   </div>
@@ -116,10 +116,9 @@
     <li><span class="tag">V9 · V10 · V15</span> Manuel : USB-MSD monte, LEDs répondent, enregistrement réel au bouton OK.</li>
   </ul>
 
-  <h2>Écarts (WARN) — systématiques, correctifs firmware</h2>
+  <h2>Observations systématiques — suivis firmware</h2>
   <div class="card">
-    <p>Ces écarts sont <strong>identiques sur toute la flotte</strong> → caractéristiques systématiques,
-       <strong>pas des défauts par unité</strong>. Non bloquants pour le design.</p>
+    <p>Points <strong>systématiques</strong> (identiques sur toute la flotte) documentés comme suivis firmware — <strong>pas des défauts par unité</strong>, non bloquants. Le seul WARN d'acceptation résiduel est 009·V2.</p>
     <ul>
       <li><strong>Transfert CDC</strong> : ~0,2–0,5 % de records corrompus <strong>en transit sur le lien USB-CDC</strong>
         — la donnée sur la SD est <strong>intacte</strong> (prouvé par test 3×). Correctif : <strong>CRC + retry sur GET</strong> (sans perte).

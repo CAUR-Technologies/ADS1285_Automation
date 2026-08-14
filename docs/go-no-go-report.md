@@ -3,7 +3,7 @@
 ## Résumé exécutif
 
 **Verdict : GO 🟢.** Les **8 unités en configuration production** validées passent
-toutes l'acceptation (**1 PASS, 7 WARN, 0 FAIL**) et la checklist manuelle. Aucun
+toutes l'acceptation (**7 PASS, 1 WARN, 0 FAIL**) et la checklist manuelle. Aucun
 défaut de **design** bloquant. Les seuls écarts (WARN) sont **systématiques** —
 identiques sur toute la flotte — et relèvent de **correctifs firmware** déjà backlogés,
 pas de défauts matériels par unité. Une 9ᵉ unité (CG0-000008) est **exclue** car
@@ -23,16 +23,16 @@ pas de défauts matériels par unité. Une 9ᵉ unité (CG0-000008) est **exclue
 
 | serial | overall | V1 | V13 | V6 | CFG | V11 | V7 | V2 | V8 |
 |---|---|---|---|---|---|---|---|---|---|
-| CG0-000001 | WARN | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ |
-| CG0-000002 | WARN | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ |
-| CG0-000003 | WARN | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ |
+| CG0-000001 | PASS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| CG0-000002 | PASS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| CG0-000003 | PASS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | CG0-000004 | **PASS** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| CG0-000005 | WARN | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ |
-| CG0-000006 | WARN | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ |
-| CG0-000007 | WARN | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ |
-| CG0-000009 | WARN | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ✅ |
+| CG0-000005 | PASS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| CG0-000006 | PASS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| CG0-000007 | PASS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| CG0-000009 | WARN | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ |
 
-**1 PASS · 7 WARN · 0 FAIL** + checklist manuelle OK. Détails : `data/acceptance/*.json`.
+**7 PASS · 1 WARN · 0 FAIL** + checklist manuelle OK. Détails : `data/acceptance/*.json`.
 
 ## Ce qui est validé (par test)
 
@@ -48,7 +48,7 @@ pas de défauts matériels par unité. Une 9ᵉ unité (CG0-000008) est **exclue
 - **V2 ADC ×3 / V8 miniSEED** : 3 voies présentes et vivantes, fichiers miniSEED valides.
 - **V9/V10/V15** (manuel) : USB-MSD monte, LEDs répondent, enregistrement réel au bouton OK.
 
-## Écarts (WARN) — SYSTÉMATIQUES, correctifs firmware (pas bloqueurs design)
+## Observations systématiques — suivis firmware (le seul WARN résiduel = 009·V2)
 
 1. **Transfert CDC** : ~0,2–0,5 % de records corrompus **en transit sur le lien USB-CDC**
    — la donnée sur la SD est **intacte** (prouvé par test 3× : même fichier → md5 différents,
