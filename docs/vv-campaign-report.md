@@ -37,9 +37,9 @@ V14) restent **non couverts** (voir §7) ; ils ne conditionnent pas le go/no-go 
 | **V9** | USB (MSD + CDC) | ✅ PASS | manuel : disque de masse monte ; CDC utilisé de bout en bout |
 | **V10** | LEDs WS2812 | ✅ PASS | manuel : 4 pixels répondent ; mapping documenté (§8.5, D13 = Health) |
 | **V11** | Tension batterie | 🟡 PASS (plage) | lecture dans la plage, MAIS **jauge fausse** (sous-estime + glitches, §8.3) |
-| **V12** | BLE (V3.1) | ➖ N/A | boards V2/V3.0, pas de contrôleur BLE monté |
+| **V12** | BLE | ✅ **PASS** | contrôleur BLE **monté sur toutes** ; advertising visible **+ app companion fonctionnelle** (transport, GATT, contrôle validés) |
 | **V13** | Détection révision (MAX7319) | ✅ PASS (8) | `hwrev: 1` sur toutes |
-| **V14** | Watchdog / RTC | ⛔ **NON couvert** | non testé ; N.B. les gels ont exigé un **reset manuel** (§8.4) — à qualifier |
+| **V14** | Watchdog / RTC | ⛔ **ABSENT (trou FW)** | **aucun watchdog dans le firmware** (vérifié : pas de `CONFIG_WATCHDOG`/`wdt_feed`) → gels = reset manuel obligatoire (§8.4, backlog #7) |
 | **V15** | Acquisition E2E | ✅ PASS | manuel (record bouton) + auto (transfert/parse) : miniSEED 3 voies daté GNSS, valide |
 | — | **CFG** (config USB) | ✅ PASS (8) | CONFIG SET/GET aller-retour |
 
@@ -92,9 +92,13 @@ homogène ~155–160 sur les 3 axes → chaîne de mesure saine. *La diffusion p
 - **V3 (synchro inter-voies ≤ 1 échantillon)** : non testé. Faisable avec le signal commun
   du shaker + analyse de phase (infra TIME-05 prête).
 - **V5 (dérive horloge / recalage PPS)** : partiel — lié à TIME-05 (précision non réglée).
-- **V14 (watchdog / RTC au reboot)** : non testé. **Point d'attention** : les gels observés
-  (§8.4) ont nécessité un **reset manuel** → à vérifier si le watchdog devrait les rattraper.
-- **V12 (BLE)** : N/A sur ces boards (contrôleur BLE non monté).
+- **V14 (watchdog / RTC au reboot)** : **watchdog ABSENT du firmware** (vérifié — aucun
+  `CONFIG_WATCHDOG`/`CONFIG_TASK_WDT`/`wdt_feed`). C'est un **trou firmware**, pas une simple
+  lacune de test : les gels observés (§8.4) ont exigé un **reset manuel** faute d'auto-reset.
+  À implémenter (backlog FW #7, priorité haute) puis tester par hang volontaire. *Incohérence :
+  la matrice V&V produit marque FW-03 « couvert ».*
+- **V12 (BLE)** : **couvert / PASS** — contrôleur monté sur toutes, advertising visible et
+  **app companion Bluetooth fonctionnelle** (transport + GATT + contrôle).
 
 ## 8. Findings & investigations
 

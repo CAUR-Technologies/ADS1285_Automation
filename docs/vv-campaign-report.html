@@ -92,9 +92,9 @@
       <tr><td class="code">V9</td><td>USB (MSD + CDC)</td><td><span class="st pass">PASS</span></td><td>manuel : disque de masse monte ; CDC utilisé de bout en bout</td></tr>
       <tr><td class="code">V10</td><td>LEDs WS2812</td><td><span class="st pass">PASS</span></td><td>manuel : 4 pixels répondent (D13 = Health, documenté)</td></tr>
       <tr><td class="code">V11</td><td>Tension batterie</td><td><span class="st warn">PASS / réserve</span></td><td>dans la plage, mais <strong>jauge fausse</strong> (sous-estime + glitches)</td></tr>
-      <tr><td class="code">V12</td><td>BLE (V3.1)</td><td><span class="st na">N/A</span></td><td>boards V2/V3.0, contrôleur BLE non monté</td></tr>
+      <tr><td class="code">V12</td><td>BLE</td><td><span class="st pass">PASS</span></td><td>contrôleur BLE <strong>monté sur toutes</strong> ; advertising visible <strong>+ app companion fonctionnelle</strong> (transport, GATT, contrôle)</td></tr>
       <tr><td class="code">V13</td><td>Détection révision (MAX7319)</td><td><span class="st pass">PASS ×8</span></td><td><code>hwrev: 1</code> sur toutes</td></tr>
-      <tr><td class="code">V14</td><td>Watchdog / RTC</td><td><span class="st gap">NON couvert</span></td><td>non testé ; gels ⇒ reset manuel (à qualifier)</td></tr>
+      <tr><td class="code">V14</td><td>Watchdog / RTC</td><td><span class="st gap">ABSENT (trou FW)</span></td><td><strong>aucun watchdog dans le firmware</strong> (vérifié) → gels = reset manuel obligatoire (backlog #7)</td></tr>
       <tr><td class="code">V15</td><td>Acquisition E2E</td><td><span class="st pass">PASS</span></td><td>record bouton + transfert/parse : miniSEED 3 voies daté GNSS, valide</td></tr>
       <tr><td class="code">CFG</td><td>Config USB</td><td><span class="st pass">PASS ×8</span></td><td>CONFIG SET/GET aller-retour</td></tr>
     </tbody>
@@ -146,7 +146,7 @@
   <ul>
     <li><strong>V3</strong> synchro inter-voies · <strong>V5</strong> dérive horloge (lié TIME-05) ·
       <strong>V14</strong> watchdog/RTC (point d'attention : les gels ont exigé un reset manuel).</li>
-    <li><strong>V12</strong> BLE : N/A sur ces boards.</li>
+    <li><strong>V12</strong> BLE : PASS (contrôleur monté, app companion fonctionnelle).</li>
   </ul>
 
   <h2>Findings — backlog firmware</h2>
