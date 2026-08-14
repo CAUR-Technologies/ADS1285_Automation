@@ -30,7 +30,7 @@ V14) restent **non couverts** (voir §7) ; ils ne conditionnent pas le go/no-go 
 | **V2** | ADS1285 ×3 | ✅ PASS (8) | 3 voies vivantes, non figées ; ADC exercé à fond en caractérisation (§5) |
 | **V3** | Synchro ADC (≤1 éch.) | 🟡 **partiel** | **firmware aligne les 3 voies** (horodatage inter-voies = **0,000 éch** sur fichiers propres, `tools/v3_sync.py`) ; synchro ADC **physique** ≤1 éch **non prouvée** par le tap (confond la mécanique des 3 axes) → injection électrique commune requise (§7) |
 | **V4** | GNSS (fix + 1PPS) | ✅ PASS | unité LC86G : `fix=1`, 4–7 sats, position Montréal ; ProPak 1PPS sur PFI0 = 0,99 Hz |
-| **V5** | Horodatage (dérive/PPS) | 🟡 **partiel** | pipeline TIME-05 opérationnel ; **précision à régler** (§6) |
+| **V5** | Horodatage (dérive/PPS) | 🟡 **partiel** | cadence **250,07 Hz stable**, horodatage RTC/PPS suit l'UTC record/record (pas de dérive) ; **plancher = 3,9 ms** (quantif. RTC 1/256 s) → cause racine du bruit TIME-05, fix prescaler RTC (`tools/pps_stability.py`, §6) |
 | **V6** | IMU | ✅ PASS (8) | STREAM, \|g\| ≈ 1,00 (0,8–1,2) |
 | **V7** | µSD / transfert | ✅ PASS (8) | 3 voies écrites+relues ; corruption **en transit CDC uniquement** (§8.6), SD intacte, ~180–220 Ko/s |
 | **V8** | MiniSEED | ✅ PASS (8) | fichiers valides (simplemseed v3 ; ObsPy = v2 only, non applicable) |
@@ -83,9 +83,13 @@ homogène ~155–160 sur les 3 axes → chaîne de mesure saine. *La diffusion p
 - **GNSS** : fix unité (LC86G) et référence (ProPak) confirmés en extérieur/antenne.
 - **Corrélation temporelle (TIME-05)** : pipeline matériel **opérationnel** (conflit de
   tâche NI `-50103` résolu par sérialisation ; `tools/time_correlation.py` +
-  `tools/time_offset.py`). **Précision d'horodatage NON validée** : résultat = bruit
-  (phases dispersées) → alignement sod à régler (étiquetage 1PPS↔NMEA + précision
-  d'horodatage firmware). **À reprendre** — clé pour la cross-corrélation ANT multi-stations.
+  `tools/time_offset.py`). **Cause racine du bruit IDENTIFIÉE** (`tools/pps_stability.py`,
+  run GNSS fixe) : les horodatages `.dat` sont **quantifiés à 3,9 ms (1/256 s)** — la RTC
+  STM32 tourne au **prescaler par défaut** (async 127 / sync 255). La cadence est saine
+  (**250,073 Hz**, +291 ppm quartz ADC) et suit l'UTC record par record (pas de dérive),
+  mais **3,9 ms est le plancher de précision**. **Fix** : prescaler RTC async ~0 / sync
+  ~32767 → **~30 µs** (×128), puis re-mesurer TIME-05. *(Backlog FW #8.)* Un **saut
+  d'horodatage** occasionnel (~140 ms au démarrage) reste à qualifier.
 
 ## 7. Couverture — tests NON réalisés
 
