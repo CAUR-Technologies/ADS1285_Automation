@@ -111,7 +111,7 @@
     <li><span class="tag">V1 · V13</span> Démarrage stable ; firmware <strong>homogène</strong> sur les 9 (<code>0.1.0.211/dae370c+</code>, hwrev 1).</li>
     <li><span class="tag">V6</span> IMU : |g| ≈ 1,00 (0,8–1,2) sur toutes.</li>
     <li><span class="tag">CFG</span> Config par USB fiable (aller-retour).</li>
-    <li><span class="tag">V7</span> Transfert USB fiable — sur gros échantillons <strong>0,00 % (004), 0,20 % (001, 3488 records), 0,43 % (006, 1849 records)</strong> de records corrompus, <strong>tous récupérés</strong>.</li>
+    <li><span class="tag">V7</span> Transfert USB — <strong>donnée SD intacte</strong> ; ~0,2–0,5 % de records corrompus <strong>uniquement en transit CDC</strong> (prouvé : même fichier récupéré 3× → md5 différents, corruption à positions différentes/nulle). Sur gros échantillons : 0,00 % (004), 0,20 % (001, 3488 records), 0,43 % (006, 1849). <strong>Récupérable sans perte par retry.</strong></li>
     <li><span class="tag">V2 · V8</span> 3 voies ADC présentes et vivantes ; miniSEED valide.</li>
     <li><span class="tag">V9 · V10 · V15</span> Manuel : USB-MSD monte, LEDs répondent, enregistrement réel au bouton OK.</li>
   </ul>
@@ -121,8 +121,9 @@
     <p>Ces écarts sont <strong>identiques sur toute la flotte</strong> → caractéristiques systématiques,
        <strong>pas des défauts par unité</strong>. Non bloquants pour le design.</p>
     <ul>
-      <li><strong>Transfert CDC</strong> : ~0,2–0,5 % de records corrompus (CRC/UTF-8), <strong>récupérés</strong>
-        côté hôte. <em>(La production récupère par MSD, pas GET.)</em></li>
+      <li><strong>Transfert CDC</strong> : ~0,2–0,5 % de records corrompus <strong>en transit sur le lien USB-CDC</strong>
+        — la donnée sur la SD est <strong>intacte</strong> (prouvé par test 3×). Correctif : <strong>CRC + retry sur GET</strong> (sans perte).
+        <em>(La production récupère par MSD, pas GET.)</em></li>
       <li><strong>Jauge batterie</strong> : lit faux — <strong>sous-estime</strong> (74 % à batterie
         <strong>pleine 7,57 VDC</strong>) et glitche à <code>1</code>/<code>2</code>.</li>
       <li><strong>CG0-000009 · V2</strong> : saturation d'un <em>ancien</em> enregistrement à forte amplitude

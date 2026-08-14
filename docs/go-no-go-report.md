@@ -40,17 +40,21 @@ pas de défauts matériels par unité. Une 9ᵉ unité (CG0-000008) est **exclue
   (`0.1.0.211/dae370c+`, hwrev 1) — condition d'une comparaison valide.
 - **V6 IMU** : |g| ≈ 1,00 sur toutes (0,8–1,2).
 - **CFG** : config par USB fiable (aller-retour).
-- **V7 transfert** : récupération USB fiable — sur gros échantillons **0,00 % (004),
-  0,20 % (001, 3488 records), 0,43 % (006, 1849 records)** de records corrompus,
-  **tous récupérés** par la lecture tolérante.
+- **V7 transfert** : **donnée enregistrée INTACTE sur la SD** ; ~0,2–0,5 % de records
+  arrivent corrompus **uniquement en transit sur le lien USB-CDC** — **prouvé** (même
+  fichier récupéré 3× → md5 différents, corruption à positions différentes ou nulle).
+  Sur gros échantillons : 0,00 % (004), 0,20 % (001, 3488 records), 0,43 % (006, 1849).
+  **Récupérable sans perte par retry** (un GET propre = la vraie donnée).
 - **V2 ADC ×3 / V8 miniSEED** : 3 voies présentes et vivantes, fichiers miniSEED valides.
 - **V9/V10/V15** (manuel) : USB-MSD monte, LEDs répondent, enregistrement réel au bouton OK.
 
 ## Écarts (WARN) — SYSTÉMATIQUES, correctifs firmware (pas bloqueurs design)
 
-1. **Transfert CDC** : ~0,2–0,5 % de records corrompus (CRC/UTF-8) — **récupérés** côté
-   hôte. Systématique sur toutes les unités → caractéristique du chemin GET/CDC, pas un
-   défaut par unité. *(Backlog FW ; N/B : la production récupère par MSD, pas GET.)*
+1. **Transfert CDC** : ~0,2–0,5 % de records corrompus **en transit sur le lien USB-CDC**
+   — la donnée sur la SD est **intacte** (prouvé par test 3× : même fichier → md5 différents,
+   corruption à positions différentes/nulle). Systématique → caractéristique du chemin
+   GET/CDC, pas un défaut par unité. Correctif : **CRC + retry sur GET** (sans perte).
+   *(Backlog FW ; N/B : la production récupère par MSD, pas GET.)*
 2. **Jauge batterie** : lit faux — **sous-estime** (74 % à batterie **pleine 7,57 VDC**)
    **et** glitche à `1`/`2`. Affecte `STATUS?` et la caractéristique BLE. *(Backlog FW.)*
 3. **009 · V2 WARN** : saturation d'un **ancien** enregistrement à forte amplitude testé
