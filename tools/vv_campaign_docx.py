@@ -157,7 +157,7 @@ table(["Test", "Objet", "Statut", "Methode / resultat"],
        ["V3", "Synchro ADC (<=1 ech.)", "partiel", "firmware aligne les 3 voies (0,000 ech) ; "
         "synchro physique par conception (common clock + SYNC PD4)"],
        ["V4", "GNSS (fix + 1PPS)", "PASS", "LC86G fix=1, 4-7 sats, Montreal ; ProPak 1PPS = 0,99 Hz"],
-       ["V5", "Horodatage (derive/PPS)", "partiel", "cadence 250,07 Hz stable, suit l'UTC ; "
+       ["V5", "Horodatage (derive/PPS)", "partiel", "cadence stable a +0,7 ppm, suit l'UTC ; "
         "plancher 3,9 ms (RTC 1/256 s) = cause racine TIME-05"],
        ["V6", "IMU", "PASS (8)", "STREAM, |g| ~ 1,00 (0,8-1,2)"],
        ["V7", "uSD / transfert", "PASS (8)", "3 voies ecrites+relues ; corruption en transit CDC "
@@ -248,11 +248,19 @@ bullet("1PPS : ProPak sur PFI0 de la crate NI = 0,99 Hz (stable).")
 bullet("GNSS : fix unite (LC86G) et reference (ProPak) confirmes en exterieur/antenne.")
 bullet("Correlation temporelle (TIME-05) : pipeline materiel operationnel. CAUSE RACINE DU BRUIT "
        "IDENTIFIEE (tools/pps_stability.py, run GNSS fixe) : les horodatages .dat sont quantifies "
-       "a 3,9 ms (1/256 s) — la RTC STM32 tourne au prescaler par defaut. La cadence est saine "
-       "(250,073 Hz, +291 ppm quartz ADC) et suit l'UTC record par record (pas de derive), mais "
-       "3,9 ms est le plancher de precision. Fix : prescaler RTC async ~0 / sync ~32767 -> ~30 us "
-       "(x128), puis re-mesurer TIME-05 (backlog FW #8). Un saut d'horodatage occasionnel "
-       "(~140 ms au demarrage) reste a qualifier.")
+       "a 3,9 ms (1/256 s) — la RTC STM32 tourne au prescaler par defaut. CORRIGE ET VALIDE SUR "
+       "MATERIEL le 2026-09-02 (prescaler async 0 / sync 32767) : grille 1/32768 s confirmee a "
+       "moins de 1,1 us pres, gigue 16 us rms sur 2 h d'enregistrement continu, aucun saut de "
+       "recalage au-dela de 41 us. Un saut d'horodatage occasionnel (~140 ms au demarrage) reste "
+       "a qualifier.")
+note("ATTENTION — correction du 2026-09-02 : la cadence de 250,073 Hz (+291 ppm attribues au "
+     "quartz ADC) annoncee dans une version anterieure de ce rapport etait un ARTEFACT de la "
+     "quantification elle-meme, pas une derive du composant. Un record dure 886/250 = 3,5440 s, "
+     "soit 907,26 pas de 3,90625 ms : la mediane des ecarts se calait forcement sur 907 pas, d'ou "
+     "un fs apparent de 250,0728 Hz. Demontre en re-quantifiant des donnees recentes sur "
+     "l'ancienne grille — on retrouve +291 ppm au ppm pres. La cadence reelle, mesuree sur la "
+     "grille fine, est de 249,9996 Hz, soit +0,7 ppm. Le quartz ADC n'a jamais derive. Ne pas "
+     "utiliser l'ancien chiffre pour justifier un changement de composant.")
 bullet("Holdover PPS (V5) (tools/v5_holdover.py, antenne debranchee en cours d'acquisition) : RTC "
        "en holdover -> derive ~16 ppm (~1,4 s/jour) sur le LSE seul. Discipline sous PPS : pas de "
        "derive tant que le fix tient. Le saut de recalage a la reprise du fix n'a pas encore ete "
