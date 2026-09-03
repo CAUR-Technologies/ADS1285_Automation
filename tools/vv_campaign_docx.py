@@ -197,11 +197,14 @@ table(["Axe", "voie", "plateau V/(m/s)", "pic (resonance)", "zeta"],
        ["Z", "ch3", "~157", "~510 @ 5-6 Hz", "0,23"]])
 para("Geophone UHS confirme ; Z nettement plus haut-Q (repete 2x, ecarts <= 8 %). Plateau "
      "homogene ~155-160 sur les 3 axes -> chaine de mesure saine.")
-note("Convention de pleine echelle a trancher (impacte ces sensibilites). dat_reader.py convertit "
-     "avec ±2,5 V a gain 1 (valide par la sensibilite ST-2A). Or le rapport de bruit produit (§5.2) "
-     "valide ±VREF/2 = ±2,048 V par la concordance au bruit datasheet (±11 %) — evidence plus "
-     "directe. Facteur 1,22 : si 2,048 V est correct, les plateaux ci-dessus tombent a ~128-131. "
-     "A resoudre sur la fiche ADS1285 avant diffusion de sensibilite absolue.")
+note("Convention de pleine echelle TRANCHEE le 2026-09-02 sur la fiche ADS1285 : ±VREF/(1,6384 x "
+     "Gain) = ±2,5 V a gain 1 pour notre reference de 4,096 V. La fiche donne trois expressions "
+     "selon la reference employee (VREF/2 pour 5 V, VREF/1,6384 pour 4,096 V, VREF pour 2,5 V) qui "
+     "valent TOUTES ±2,5 V ; confirmation au §7.5, qui recommande 2,4 V pour l'etalonnage de gain — "
+     "impossible si la pleine echelle valait 2,048 V. Les sensibilites ci-dessus, calculees avec "
+     "±2,5 V, sont donc correctes et inchangees. C'est le rapport de bruit produit qui etait faux "
+     "(il concluait ±VREF/2 par elimination entre deux hypotheses dont la bonne etait absente) ; "
+     "il a ete corrige, toutes ses valeurs en volts multipliees par 1,2207.")
 
 heading("5.2 Bruit propre de la chaine d'acquisition (ACQ-09) — ADS1285", 2)
 para("Validation du bruit propre de l'electronique (ADC + PGA), entrees court-circuitees (MUX "
@@ -298,8 +301,9 @@ para("GO pour le design : flotte homogene, saine, aucun FAIL. La chaine ADC est 
 bullet("Correctifs firmware (non bloquants) : jauge batterie + charge/USB · BLE idempotent · "
        "integrite+retry transfert CDC · TX CDC en prod · ecriture SD · prescaler RTC (debloque "
        "TIME-05) · watchdog (fiabilite terrain).")
-bullet("Resoudre la convention de pleine echelle ADC (±2,048 V vs ±2,5 V) — impacte les "
-       "sensibilites 3 axes ; trancher sur la fiche ADS1285.")
+bullet("Convention de pleine echelle ADC : RESOLUE (2026-09-02) a ±2,5 V a gain 1 sur la fiche "
+       "ADS1285. Les sensibilites 3 axes de ce rapport sont inchangees ; c'est le rapport de "
+       "bruit produit qui a ete corrige.")
 bullet("Completer la couverture : V3 (injection electrique), V5 (capturer le recalage PPS), "
        "V14 (implementer le watchdog).")
 bullet("Choix du gain de production (ACQ-09) : arbitrer bruit BF vs pleine echelle sur "

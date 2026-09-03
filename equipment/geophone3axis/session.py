@@ -582,7 +582,9 @@ class Characterize3AxisSession:
         ref_sods     : temps GPS (sod) de chaque échantillon de `ref_signal`
                        (via `Pps1ppsMonitor` + `gnss.pps.sample_to_gps_sod`).
         sens_v_per_g : sensibilité chaîne accéléro (V/g).
-        lsb_v        : volts par count de l'ADC unité (2,048/gain / 2³¹).
+        lsb_v        : volts par count de l'ADC unité (2,5/gain / 2³¹ pour l'ADS1285 ;
+                       préférer `dat_reader.fullscale_vpeak_g1()` sur l'en-tête du
+                       fichier dès que plusieurs générations de carte coexistent).
         unit_channels: liste de `Channel3Axis` (défaut : lues des `.dat` de
                        `self._pulled`). Plusieurs segments par voie tolérés.
 
@@ -659,7 +661,10 @@ class Characterize3AxisSession:
         finally:
             self.stop_unit()
         files = self.retrieve_files(survey_path)
-        lsb_v = 2.048 / gain / (2 ** 31)
+        # Pleine échelle prise sur la fiche ADS1285 (±VREF/1,6384 = ±2,5 V à gain 1),
+        # pas sur l'hypothèse ±VREF/2 = 2,048 V qui traînait ici : elle sous-estimait
+        # toutes les sensibilités de ce chemin d'un facteur 1,22.
+        lsb_v = dat_reader.UNIT3AXIS_FULLSCALE_VPEAK_G1 / gain / (2 ** 31)
         corr = self.correlate(acq["schedule"], acq["ref_signal"], acq["ref_sods"],
                               sens_v_per_g=acq["sens_v_per_g"], lsb_v=lsb_v)
         return {"config": cfg, "files": files, "sensitivity": corr, "acq": acq}
