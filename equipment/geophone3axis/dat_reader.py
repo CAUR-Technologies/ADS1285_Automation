@@ -51,13 +51,17 @@ UNIT3AXIS_FULLSCALE_VPEAK_G1 = 2.5
 # l'en-tête `caurtech.hardware_revision`. Une seule entrée aujourd'hui : la V2 comme la
 # V3.1 portent l'ADS1285, et toutes deux **strappent la révision 1**.
 #
-# ⚠️ C'est précisément le problème pour la V3.2 : le champ existe et est écrit dans
-# chaque fichier, mais il ne discrimine rien tant que deux générations rapportent la
-# même valeur. La V3.2, qui change de convertisseur, **doit être strappée sur un octet
-# distinct** — sinon un fichier ne pourra plus être rattaché à sa génération, donc plus
-# être converti correctement. Voir `geophones-firmware/doc/hardware/pin-map.md`.
+# La V2 et la V3.1 rapportent toutes deux 1 : elles ne se discriminaient pas, faute
+# d'en avoir eu besoin. La V3.2 change de convertisseur, donc de pleine échelle, et
+# strappera `I0` au 3V pour rapporter **2** (décidé 2026-09-04 ; ⚠️ pas encore reporté
+# dans les fichiers de conception à cette date). Voir
+# `geophones-firmware/doc/hardware/board-revisions.md`.
 FULLSCALE_VPEAK_G1_BY_HWREV = {
     1: 2.5,  # V2 et V3.1 — ADS1285, VREF 4,096 V (REF6041)
+    # 2: ...  # V3.2 — ADS131E08, reference interne. Valeur a etablir sur la fiche du
+    #         # composant AVANT de lire des enregistrements V3.2 : laisser l'entree
+    #         # absente est volontaire, le lecteur avertit alors d'une revision inconnue
+    #         # plutot que de convertir en silence avec la pleine echelle de l'ADS1285.
 }
 
 
